@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { motion } from "framer-motion";
 import * as I from "lucide-react";
 import QRCode from "qrcode";
 import { Html5Qrcode } from "html5-qrcode";
@@ -3031,9 +3032,13 @@ function TransactionChatCard({ message, db, save, user, setToast }) {
     setToast(`${data.reference} added to your transactions`);
   };
   return (
-    <article
+    <motion.article
       className={`transaction-message ${message.sender} ${expanded ? "expanded" : ""}`}
       tabIndex="0"
+      layout
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.2 }}
     >
       <div className="transaction-message-head">
         <span>
@@ -3111,7 +3116,7 @@ function TransactionChatCard({ message, db, save, user, setToast }) {
         <Icon name={existingRecord ? "CircleCheck" : "PlusCircle"} />
         {existingRecord ? "Already in transactions" : "Add to my transactions"}
       </button>
-    </article>
+    </motion.article>
   );
 }
 function ShareRecordModal({ record, db, save, user, close, setToast }) {
@@ -4611,14 +4616,20 @@ function Setting({ icon, title, text, children }) {
 }
 function Modal({ title, close, children, wide }) {
   return createPortal(
-    <div
+    <motion.div
       className="scrim"
       onMouseDown={(e) => e.target === e.currentTarget && close()}
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0.18 }}
     >
-      <section
+      <motion.section
         className={"modal " + (wide ? "wide" : "")}
         role="dialog"
         aria-modal="true"
+        initial={{ opacity: 0, y: 14, scale: 0.985 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
       >
         <div className="modal-head">
           <h2>{title}</h2>
@@ -4627,8 +4638,8 @@ function Modal({ title, close, children, wide }) {
           </button>
         </div>
         {children}
-      </section>
-    </div>,
+      </motion.section>
+    </motion.div>,
     document.body,
   );
 }
