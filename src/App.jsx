@@ -229,6 +229,7 @@ function App() {
       <main>
         {page === "home" && <Home {...props} setPage={setPage} />}{" "}
         {page === "portal" && <Portal {...props} setPage={setPage} />}{" "}
+        {page === "rates" && <RatesMarketplace {...props} setPage={setPage} />}{" "}
         {page === "records" && <Records {...props} />}{" "}
         {page === "reports" && <Reports {...props} />}{" "}
         {page === "settings" && (
@@ -640,6 +641,7 @@ function Onboarding({ user, close }) {
 const nav = [
   ["home", "MessagesSquare", "Messages"],
   ["portal", "UsersRound", "Community"],
+  ["rates", "BadgeDollarSign", "Rates"],
   ["records", "TableProperties", "Transactions"],
   ["reports", "ChartNoAxesCombined", "Reports"],
   ["settings", "Settings", "Settings"],
@@ -681,9 +683,10 @@ function Sidebar({ page, setPage, user }) {
   );
 }
 function MobileNav({ page, setPage }) {
+  const mobileNav = nav.filter(([p]) => p !== "reports");
   return (
     <div className="mobile-nav">
-      {nav.map(([p, i, l]) => (
+      {mobileNav.map(([p, i, l]) => (
         <button
           key={p}
           className={page === p ? "active" : ""}
@@ -705,6 +708,457 @@ function Header({ title, sub, actions }) {
       </div>
       <div className="actions">{actions}</div>
     </header>
+  );
+}
+const sampleOffers = [
+  {
+    id: "offer-1",
+    owner: "market",
+    provider: "Dawit Exchange",
+    contact: "@dawit.a",
+    fromCurrency: "USD",
+    toCurrency: "ETB",
+    rate: 151.5,
+    side: "Sell",
+    instrument: "Bank transfer",
+    min: 100,
+    max: 2500,
+    location: "Frankfurt · Asmara",
+    verified: true,
+    note: "Same-day confirmation during business hours.",
+  },
+  {
+    id: "offer-2",
+    owner: "market",
+    provider: "Semhar Remit",
+    contact: "@semhar.t",
+    fromCurrency: "EUR",
+    toCurrency: "ETB",
+    rate: 174.2,
+    side: "Sell",
+    instrument: "Cash pickup",
+    min: 50,
+    max: 1200,
+    location: "Asmara",
+    verified: true,
+    note: "Receiver ID required for collection.",
+  },
+  {
+    id: "offer-3",
+    owner: "market",
+    provider: "Red Sea Payments",
+    contact: "+971 50 555 0194",
+    fromCurrency: "AED",
+    toCurrency: "USD",
+    rate: 0.271,
+    side: "Buy",
+    instrument: "Mobile money",
+    min: 200,
+    max: 5000,
+    location: "Dubai",
+    verified: false,
+    note: "Rate confirmed again before order acceptance.",
+  },
+];
+function RatesMarketplace({ db, save, user, setToast, setPage }) {
+  const [base, setBase] = useState("USD");
+  const [live, setLive] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [add, setAdd] = useState(false);
+  const [search, setSearch] = useState("");
+  const [refresh, setRefresh] = useState(0);
+  useEffect(() => {
+    const controller = new AbortController();
+    setLoading(true);
+    setError("");
+    fetch(
+      `https://api.frankfurter.dev/v1/latest?base=${base}&symbols=USD,EUR,GBP,CAD,JPY,CHF,TRY,AUD,CNY`,
+      { signal: controller.signal },
+    )
+      .then((r) => {
+        if (!r.ok) throw new Error("Rate service unavailable");
+        return r.json();
+      })
+      .then((data) => {
+        setLive(data);
+        setLoading(false);
+      })
+      .catch((e) => {
+        if (e.name !== "AbortError") {
+          setError(
+            "Live reference rates could not be loaded. Try again shortly.",
+          );
+          setLoading(false);
+        }
+      });
+    return () => controller.abort();
+  }, [base, refresh]);
+  const offers = [...sampleOffers, ...(db.rateOffers || [])];
+  const visible = offers.filter((x) =>
+    (x.provider + x.fromCurrency + x.toCurrency + x.instrument + x.location)
+      .toLowerCase()
+      .includes(search.toLowerCase()),
+  );
+  const messageProvider = (offer) => {
+    let contact = db.contacts.find(
+      (x) =>
+        x.owner === user.id &&
+        (x.phone === offer.contact || x.rateProvider === offer.provider),
+    );
+    const contactId = contact?.id || uid("c");
+    const newContact = contact || {
+      id: contactId,
+      owner: user.id,
+      name: offer.provider,
+      phone: offer.contact,
+      country: offer.location || "Marketplace",
+      color: "#35a57a",
+      rateProvider: offer.provider,
+    };
+    const orderText = `Rate order inquiry: ${offer.side} ${offer.fromCurrency}/${offer.toCurrency} at ${offer.rate}. Instrument: ${offer.instrument}. Please confirm availability, fees, and final amount.`;
+    save((d) => ({
+      ...d,
+      contacts: contact ? d.contacts : [...d.contacts, newContact],
+      messages: [
+        ...d.messages,
+        {
+          id: uid("m"),
+          owner: user.id,
+          contact: contactId,
+          sender: "me",
+          content: orderText,
+          time: new Date().toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+          }),
+        },
+      ],
+    }));
+    setToast("Order inquiry added to messages");
+    setPage("home");
+  };
+  const rateEntries = live
+    ? Object.entries(live.rates).filter(([code]) => code !== base)
+    : [];
+  return (
+    <div className="page rates-page">
+      <Header
+        title="Rates marketplace"
+        sub="Compare official reference rates with offers posted by community providers"
+        actions={
+          <button
+            className="primary"
+            onClick={() =>
+              user.plan === "Pro"
+                ? setAdd(true)
+                : setToast("Publishing rates is a Pro feature")
+            }
+          >
+            <Icon name="Plus" />
+            List your rate
+          </button>
+        }
+      />
+      <section className="rate-hero">
+        <div>
+          <span className="eyebrow">LIVE REFERENCE MARKET</span>
+          <h2>
+            Know the reference.
+            <br />
+            <span>Choose your offer.</span>
+          </h2>
+          <p>
+            Use reference rates to compare; contact providers directly to
+            confirm the executable rate, fees, settlement time, and
+            availability.
+          </p>
+        </div>
+        <div className="rate-converter">
+          <label>
+            Base currency
+            <select value={base} onChange={(e) => setBase(e.target.value)}>
+              <option>USD</option>
+              <option>EUR</option>
+              <option>GBP</option>
+            </select>
+          </label>
+          <div>
+            <small>Source</small>
+            <b>Official-provider reference data</b>
+          </div>
+          <div>
+            <small>Publication date</small>
+            <b>{live?.date || "Loading…"}</b>
+          </div>
+        </div>
+      </section>
+      <div className="section-heading">
+        <div>
+          <h2>Reference exchange rates</h2>
+          <p>1 {base} equals the values below</p>
+        </div>
+        <span className="live-pill">
+          <i />
+          {loading ? "Updating" : "Latest published"}
+        </span>
+      </div>
+      {error && (
+        <div className="error rate-error" role="alert">
+          <Icon name="CircleAlert" />
+          {error}
+          <button onClick={() => setRefresh((x) => x + 1)}>Retry</button>
+        </div>
+      )}
+      <div className="reference-grid" aria-live="polite">
+        {loading
+          ? Array.from({ length: 6 }).map((_, i) => (
+              <div className="rate-skeleton" key={i} />
+            ))
+          : rateEntries.map(([code, value]) => (
+              <article key={code} className="reference-card">
+                <span>{code}</span>
+                <b className="mono">
+                  {Number(value).toLocaleString(undefined, {
+                    maximumFractionDigits: 5,
+                  })}
+                </b>
+                <small>per 1 {base}</small>
+              </article>
+            ))}
+      </div>
+      <div className="market-head">
+        <div>
+          <span className="eyebrow">COMMUNITY MARKETPLACE</span>
+          <h2>Provider offers</h2>
+          <p>
+            Rates and terms posted by members. Verify identity and terms before
+            ordering.
+          </p>
+        </div>
+        <div className="search">
+          <Icon name="Search" />
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search currency, provider or instrument"
+          />
+        </div>
+      </div>
+      <div className="offer-list">
+        {visible.map((offer) => (
+          <article className="offer-card" key={offer.id}>
+            <div className="offer-provider">
+              <div
+                className="avatar"
+                style={{ background: offer.verified ? "#35a57a" : "#4c5d77" }}
+              >
+                {offer.provider
+                  .split(" ")
+                  .map((x) => x[0])
+                  .slice(0, 2)}
+              </div>
+              <div>
+                <h3>
+                  {offer.provider}
+                  {offer.verified && <Icon name="BadgeCheck" size={16} />}
+                </h3>
+                <span>
+                  {offer.location} · {offer.contact}
+                </span>
+              </div>
+              <small className="user-posted">User posted</small>
+            </div>
+            <div className="offer-pair">
+              <span>{offer.side}</span>
+              <b>
+                {offer.fromCurrency} <Icon name="ArrowRight" size={16} />{" "}
+                {offer.toCurrency}
+              </b>
+              <strong className="mono">{offer.rate}</strong>
+            </div>
+            <div className="offer-terms">
+              <span>
+                <Icon name="Landmark" />
+                {offer.instrument}
+              </span>
+              <span>
+                <Icon name="MoveHorizontal" />
+                {offer.min}–{offer.max} {offer.fromCurrency}
+              </span>
+              <p>{offer.note}</p>
+            </div>
+            <button className="primary" onClick={() => messageProvider(offer)}>
+              <Icon name="MessageCircle" />
+              Message & place order
+            </button>
+          </article>
+        ))}
+      </div>
+      <div className="rate-disclaimer">
+        <Icon name="ShieldAlert" />
+        <div>
+          <b>Reference rates are not guaranteed transaction prices</b>
+          <p>
+            Rates can change and community offers are submitted by users.
+            DataChat does not hold funds or guarantee a provider. Confirm
+            identity, fees, final payout, timing, and local legal requirements
+            before sending money.
+          </p>
+        </div>
+      </div>
+      {add && (
+        <RateOfferModal
+          user={user}
+          save={save}
+          close={() => setAdd(false)}
+          setToast={setToast}
+        />
+      )}
+    </div>
+  );
+}
+function RateOfferModal({ user, save, close, setToast }) {
+  const submit = (e) => {
+    e.preventDefault();
+    const f = Object.fromEntries(new FormData(e.currentTarget));
+    const offer = {
+      ...f,
+      id: uid("offer"),
+      owner: user.id,
+      rate: +f.rate,
+      min: +f.min,
+      max: +f.max,
+      verified: false,
+      createdAt: new Date().toISOString(),
+    };
+    save((d) => ({ ...d, rateOffers: [...(d.rateOffers || []), offer] }));
+    setToast("Your market rate was published");
+    close();
+  };
+  const currencies = [
+    "USD",
+    "EUR",
+    "GBP",
+    "AED",
+    "SAR",
+    "ETB",
+    "CAD",
+    "AUD",
+    "CHF",
+    "TRY",
+    "Other",
+  ];
+  return (
+    <Modal title="Publish a market rate" close={close} wide>
+      <form className="form grid rate-form" onSubmit={submit}>
+        <div className="full premium-note">
+          <Icon name="Crown" />
+          <div>
+            <b>Pro marketplace listing</b>
+            <small>
+              Your contact information and terms will be visible to signed-in
+              members.
+            </small>
+          </div>
+        </div>
+        <label>
+          Provider or display name
+          <input name="provider" required defaultValue={user.name} />
+        </label>
+        <label>
+          Contact information
+          <input
+            name="contact"
+            required
+            placeholder="Phone, email or @username"
+          />
+        </label>
+        <label>
+          Location
+          <input name="location" required placeholder="City, country" />
+        </label>
+        <label>
+          Offer type
+          <select name="side">
+            <option>Sell</option>
+            <option>Buy</option>
+            <option>Exchange</option>
+          </select>
+        </label>
+        <label>
+          From currency
+          <select name="fromCurrency">
+            {currencies.map((x) => (
+              <option key={x}>{x}</option>
+            ))}
+          </select>
+        </label>
+        <label>
+          To currency
+          <select name="toCurrency" defaultValue="ETB">
+            {currencies.map((x) => (
+              <option key={x}>{x}</option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Rate
+          <input
+            name="rate"
+            type="number"
+            min=".000001"
+            step=".000001"
+            required
+            placeholder="e.g. 151.50"
+          />
+        </label>
+        <label>
+          Minimum amount
+          <input name="min" type="number" min="0" required />
+        </label>
+        <label>
+          Maximum amount
+          <input name="max" type="number" min="0" required />
+        </label>
+        <label>
+          Financial instrument
+          <select name="instrument">
+            <option>Bank transfer</option>
+            <option>Cash pickup</option>
+            <option>Mobile money</option>
+            <option>Debit or credit card</option>
+            <option>Digital wallet</option>
+            <option>Stablecoin settlement</option>
+            <option>Other</option>
+          </select>
+        </label>
+        <label className="full">
+          Terms and notes
+          <textarea
+            name="note"
+            required
+            placeholder="Fees, availability, settlement timing and identification requirements."
+          />
+        </label>
+        <div className="full listing-consent">
+          <Icon name="Info" />
+          <span>
+            I confirm this information is accurate and understand that members
+            will contact me directly to confirm an order.
+          </span>
+        </div>
+        <div className="full modal-actions">
+          <button type="button" className="secondary" onClick={close}>
+            Cancel
+          </button>
+          <button className="primary">
+            <Icon name="Send" />
+            Publish rate
+          </button>
+        </div>
+      </form>
+    </Modal>
   );
 }
 function Portal({ db, save, user, setToast, setPage }) {

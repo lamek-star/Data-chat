@@ -31,3 +31,7 @@ The production web build caches the application shell for offline access. This p
 ## Cash handoff security
 
 Each transfer receives a cryptographically generated six-digit secret. DataChat binds it to the transaction ID and normalized receiver name in a complete claim code. Cash agents must validate the full text or QR claim, never the six-digit number alone.
+
+## Rates marketplace
+
+The Rates page loads latest published reference exchange rates from Frankfurter's official-provider API. These are comparison references, not guaranteed transaction quotes. Pro members can post their own buy, sell, or exchange offers with contact information, limits, instrument, and terms; interested users can create a direct order inquiry in chat.
