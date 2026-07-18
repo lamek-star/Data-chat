@@ -65,6 +65,17 @@ const seed = {
       email: "demo@datachat.app",
       password: "demo123",
       plan: "Pro",
+      role: "user",
+      status: "active",
+    },
+    {
+      id: "admin",
+      name: "DataChat Administrator",
+      email: "admin@datachat.app",
+      password: "admin123",
+      plan: "Admin",
+      role: "admin",
+      status: "active",
     },
   ],
   records: [
@@ -166,10 +177,35 @@ const seed = {
     },
   ],
   notifications: [],
+  accessCodes: [
+    {
+      id: "code-demo",
+      code: "WELCOME-PRO-2026",
+      plan: "Pro",
+      status: "available",
+      paymentMethod: "Cash",
+      createdAt: "2026-07-18",
+    },
+  ],
+  adminConfig: {
+    repositoryUrl: "https://github.com/lamek-star/Data-chat",
+    paymentUrl: "",
+    supportEmail: "support@datachat.app",
+  },
 };
 const load = () => {
   try {
-    return JSON.parse(localStorage.getItem(K)) || seed;
+    const saved = JSON.parse(localStorage.getItem(K));
+    if (!saved) return seed;
+    const users = saved.users || [];
+    if (!users.some((x) => x.id === "admin")) users.push(seed.users[1]);
+    return {
+      ...seed,
+      ...saved,
+      users,
+      accessCodes: saved.accessCodes || seed.accessCodes,
+      adminConfig: { ...seed.adminConfig, ...(saved.adminConfig || {}) },
+    };
   } catch {
     return seed;
   }
@@ -205,7 +241,11 @@ function App() {
     [user, setUser] = useState(() =>
       JSON.parse(sessionStorage.getItem("dc-user") || "null"),
     ),
-    [page, setPage] = useState("home"),
+    [page, setPage] = useState(() =>
+      JSON.parse(sessionStorage.getItem("dc-user") || "null")?.role === "admin"
+        ? "admin"
+        : "home",
+    ),
     [toast, setToast] = useState(""),
     [onboarding, setOnboarding] = useState(false);
   useEffect(() => localStorage.setItem(K, JSON.stringify(db)), [db]);
@@ -217,9 +257,12 @@ function App() {
   }, [toast]);
   const save = (fn) => setDb((d) => (typeof fn === "function" ? fn(d) : fn));
   const login = (u) => {
+    if (u.status === "suspended" || u.status === "pending") return;
     setUser(u);
+    if (u.role === "admin") setPage("admin");
     sessionStorage.setItem("dc-user", JSON.stringify(u));
-    if (!localStorage.getItem(`dc-onboarded-${u.id}`)) setOnboarding(true);
+    if (u.role !== "admin" && !localStorage.getItem(`dc-onboarded-${u.id}`))
+      setOnboarding(true);
   };
   if (!user) return <Auth db={db} save={save} login={login} />;
   const props = { db, save, user, setToast };
@@ -227,11 +270,20 @@ function App() {
     <div className="app">
       <Sidebar page={page} setPage={setPage} user={user} />
       <main>
-        {page === "home" && <Home {...props} setPage={setPage} />}{" "}
-        {page === "portal" && <Portal {...props} setPage={setPage} />}{" "}
-        {page === "rates" && <RatesMarketplace {...props} setPage={setPage} />}{" "}
-        {page === "records" && <Records {...props} />}{" "}
-        {page === "reports" && <Reports {...props} />}{" "}
+        {user.role !== "admin" && page === "home" && (
+          <Home {...props} setPage={setPage} />
+        )}{" "}
+        {user.role !== "admin" && page === "portal" && (
+          <Portal {...props} setPage={setPage} />
+        )}{" "}
+        {user.role !== "admin" && page === "rates" && (
+          <RatesMarketplace {...props} setPage={setPage} />
+        )}{" "}
+        {page === "admin" && user.role === "admin" && (
+          <AdminConsole {...props} />
+        )}
+        {user.role !== "admin" && page === "records" && <Records {...props} />}{" "}
+        {user.role !== "admin" && page === "reports" && <Reports {...props} />}{" "}
         {page === "settings" && (
           <Settings
             {...props}
@@ -384,6 +436,7 @@ function Auth({ db, save, login }) {
   const [mode, setMode] = useState("login");
   const [err, setErr] = useState("");
   const [slide, setSlide] = useState(0);
+  const [agreementOpen, setAgreementOpen] = useState(false);
   const slides = [
     {
       image: "/assets/welcome-community.png",
@@ -424,18 +477,46 @@ function Auth({ db, save, login }) {
         (x) => x.email === email && x.password === password,
       );
       if (!u) return setErr("Email or password is incorrect.");
+      if (u.status === "suspended")
+        return setErr("This account is suspended. Contact support.");
+      if (u.status === "pending")
+        return setErr("This account is waiting for administrator approval.");
       login(u);
     } else {
       if (db.users.some((x) => x.email === email))
         return setErr("An account already exists for this email.");
+      const enteredCode = f.get("accessCode").trim().toUpperCase();
+      const access = (db.accessCodes || []).find(
+        (x) => x.code === enteredCode && x.status === "available",
+      );
+      if (!access)
+        return setErr("A valid unused administrator access code is required.");
+      if (f.get("agreement") !== "on")
+        return setErr("You must accept the User Access & Privacy Agreement.");
       const u = {
         id: uid("user"),
         name: f.get("name"),
         email,
         password,
-        plan: "Free",
+        plan: access.plan || "Free",
+        role: "user",
+        status: "active",
+        createdAt: new Date().toISOString(),
       };
-      save((d) => ({ ...d, users: [...d.users, u] }));
+      save((d) => ({
+        ...d,
+        users: [...d.users, u],
+        accessCodes: d.accessCodes.map((x) =>
+          x.id === access.id
+            ? {
+                ...x,
+                status: "used",
+                usedBy: u.email,
+                usedAt: new Date().toISOString(),
+              }
+            : x,
+        ),
+      }));
       login(u);
     }
   };
@@ -509,10 +590,25 @@ function Auth({ db, save, login }) {
               : "New accounts begin with completely separate data and a short guided tour."}
           </p>
           {mode === "register" && (
-            <label>
-              Full name
-              <input name="name" required placeholder="Your full name" />
-            </label>
+            <>
+              <label>
+                Full name
+                <input name="name" required placeholder="Your full name" />
+              </label>
+              <label>
+                Administrator access code
+                <input
+                  name="accessCode"
+                  required
+                  autoCapitalize="characters"
+                  placeholder="Enter cash or invitation code"
+                />
+                <small>
+                  Use the one-time code issued after cash payment or by an
+                  administrator.
+                </small>
+              </label>
+            </>
           )}
           <label>
             Email address
@@ -524,6 +620,18 @@ function Auth({ db, save, login }) {
               placeholder="you@example.com"
             />
           </label>
+          {mode === "register" && (
+            <label className="check-row agreement-check">
+              <input type="checkbox" name="agreement" required />
+              <span>
+                I have read and accept the{" "}
+                <button type="button" onClick={() => setAgreementOpen(true)}>
+                  User Access & Privacy Agreement
+                </button>
+                .
+              </span>
+            </label>
+          )}
           <label>
             Password
             <input
@@ -553,7 +661,22 @@ function Auth({ db, save, login }) {
               : "Already have an account? Sign in"}
           </button>
           {mode === "login" && (
-            <div className="demo">Demo: demo@datachat.app / demo123</div>
+            <div className="demo">
+              User: demo@datachat.app / demo123
+              <br />
+              Admin: admin@datachat.app / admin123
+            </div>
+          )}
+          {mode === "register" && db.adminConfig?.paymentUrl && (
+            <a
+              className="payment-link"
+              href={db.adminConfig.paymentUrl}
+              target="_blank"
+              rel="noreferrer"
+            >
+              <Icon name="CreditCard" />
+              Pay online to request an access code
+            </a>
           )}
           <small className="auth-legal">
             <Icon name="LockKeyhole" />
@@ -562,6 +685,12 @@ function Auth({ db, save, login }) {
           </small>
         </form>
       </section>
+      {agreementOpen && (
+        <AccessAgreement
+          close={() => setAgreementOpen(false)}
+          config={db.adminConfig}
+        />
+      )}
     </div>
   );
 }
@@ -638,7 +767,63 @@ function Onboarding({ user, close }) {
     </div>
   );
 }
+function AccessAgreement({ close, config }) {
+  return (
+    <Modal title="User Access & Privacy Agreement" close={close} wide>
+      <div className="legal access-agreement">
+        <p>Effective July 18, 2026 · Please read before creating an account.</p>
+        <h3>1. Account administration</h3>
+        <p>
+          DataChat administrators may view account metadata needed to operate
+          access: your name, email address, account status, plan, registration
+          date, access-code history, and support information. Administrators may
+          approve, suspend, or change account access.
+        </p>
+        <h3>2. Private workspace content</h3>
+        <p>
+          Administrators are not authorized through the admin dashboard to read
+          your messages, contacts, financial records, transaction security keys,
+          or backup contents. Those remain private to the signed-in user
+          account. Production deployment must enforce this boundary on the
+          server, not only in the interface.
+        </p>
+        <h3>3. Payments and access codes</h3>
+        <p>
+          Online payments may use the payment link configured by the
+          administrator. For approved cash payments, an administrator may issue
+          a random one-time code. Codes can be redeemed once, may expire, and
+          must not be purchased from an unauthorized person.
+        </p>
+        <h3>4. Backups</h3>
+        <p>
+          You are responsible for keeping a recovery password and backup copy
+          safe. Encrypted backups can be downloaded to your phone or shared
+          through supported device apps such as Drive or Gmail. DataChat cannot
+          recover a forgotten backup password.
+        </p>
+        <h3>5. Financial and community responsibility</h3>
+        <p>
+          DataChat is a communication and recordkeeping tool, not a bank or
+          money transmitter. Verify identities, rates, fees, payment
+          instructions, and legal requirements independently. Fraud, harassment,
+          sanctions evasion, and unlawful activity are prohibited.
+        </p>
+        <h3>6. Links and consent</h3>
+        <p>
+          Repository: {config?.repositoryUrl || "Not configured"}. Payment links
+          and external services have their own terms. By creating an account,
+          you acknowledge this agreement and consent to the limited
+          administrative access described above.
+        </p>
+        <button className="primary full-btn" onClick={close}>
+          I understand
+        </button>
+      </div>
+    </Modal>
+  );
+}
 const nav = [
+  ["admin", "ShieldCheck", "Admin"],
   ["home", "MessagesSquare", "Messages"],
   ["portal", "UsersRound", "Community"],
   ["rates", "BadgeDollarSign", "Rates"],
@@ -647,6 +832,10 @@ const nav = [
   ["settings", "Settings", "Settings"],
 ];
 function Sidebar({ page, setPage, user }) {
+  const visibleNav =
+    user.role === "admin"
+      ? nav.filter(([p]) => p === "admin" || p === "settings")
+      : nav.filter(([p]) => p !== "admin");
   return (
     <aside>
       <div className="brand">
@@ -656,7 +845,7 @@ function Sidebar({ page, setPage, user }) {
         <b>DataChat</b>
       </div>
       <nav>
-        {nav.map(([p, i, l]) => (
+        {visibleNav.map(([p, i, l]) => (
           <button
             key={p}
             className={page === p ? "active" : ""}
@@ -683,7 +872,11 @@ function Sidebar({ page, setPage, user }) {
   );
 }
 function MobileNav({ page, setPage }) {
-  const mobileNav = nav.filter(([p]) => p !== "reports");
+  const sessionUser = JSON.parse(sessionStorage.getItem("dc-user") || "null");
+  const mobileNav =
+    sessionUser?.role === "admin"
+      ? nav.filter(([p]) => p === "admin" || p === "settings")
+      : nav.filter(([p]) => p !== "reports" && p !== "admin");
   return (
     <div className="mobile-nav">
       {mobileNav.map(([p, i, l]) => (
@@ -2616,6 +2809,521 @@ function Reports({ db, user }) {
     </div>
   );
 }
+function AdminConsole({ db, save, user, setToast }) {
+  const [codeModal, setCodeModal] = useState(false);
+  const users = db.users.filter((x) => x.role !== "admin");
+  const codes = db.accessCodes || [];
+  const updateUser = (id, changes) => {
+    save((d) => ({
+      ...d,
+      users: d.users.map((x) => (x.id === id ? { ...x, ...changes } : x)),
+    }));
+    setToast("Account access updated");
+  };
+  const saveConfig = (e) => {
+    e.preventDefault();
+    const values = Object.fromEntries(new FormData(e.currentTarget));
+    save((d) => ({ ...d, adminConfig: values }));
+    setToast("Admin links saved");
+  };
+  return (
+    <div className="page admin-page">
+      <Header
+        title="Administration"
+        sub="Control account access, plans, payment links and cash codes"
+        actions={
+          <button className="primary" onClick={() => setCodeModal(true)}>
+            <Icon name="TicketCheck" />
+            Generate access code
+          </button>
+        }
+      />
+      <div className="admin-privacy">
+        <Icon name="LockKeyhole" />
+        <div>
+          <b>Account metadata only</b>
+          <p>
+            This console intentionally cannot display private messages,
+            contacts, transactions, security keys, or user backups.
+          </p>
+        </div>
+      </div>
+      <div className="stats">
+        <Stat
+          icon="Users"
+          label="User accounts"
+          value={users.length}
+          note="Excludes administrators"
+        />
+        <Stat
+          icon="UserCheck"
+          label="Active access"
+          value={
+            users.filter((x) => (x.status || "active") === "active").length
+          }
+          note="Can sign in"
+        />
+        <Stat
+          icon="Crown"
+          label="Pro accounts"
+          value={users.filter((x) => x.plan === "Pro").length}
+          note="Premium access"
+        />
+        <Stat
+          icon="TicketCheck"
+          label="Unused codes"
+          value={codes.filter((x) => x.status === "available").length}
+          note="Ready to redeem"
+        />
+      </div>
+      <section className="panel admin-links">
+        <div className="panel-title">
+          <div>
+            <h2>Repository, payment and support links</h2>
+            <p>These appear in the agreement and account-access experience.</p>
+          </div>
+        </div>
+        <form className="admin-link-form" onSubmit={saveConfig}>
+          <label>
+            Repository URL
+            <input
+              name="repositoryUrl"
+              type="url"
+              defaultValue={db.adminConfig?.repositoryUrl}
+            />
+          </label>
+          <label>
+            Online payment URL
+            <input
+              name="paymentUrl"
+              type="url"
+              defaultValue={db.adminConfig?.paymentUrl}
+              placeholder="https://payment-provider.example/..."
+            />
+          </label>
+          <label>
+            Support email
+            <input
+              name="supportEmail"
+              type="email"
+              defaultValue={db.adminConfig?.supportEmail}
+            />
+          </label>
+          <button className="primary">
+            <Icon name="Save" />
+            Save links
+          </button>
+        </form>
+      </section>
+      <section className="panel admin-section">
+        <div className="panel-title">
+          <div>
+            <h2>Account access</h2>
+            <p>
+              Identity metadata and access controls—no private workspace
+              content.
+            </p>
+          </div>
+        </div>
+        <div className="admin-users">
+          {users.map((account) => (
+            <article key={account.id}>
+              <div className="avatar">
+                {account.name
+                  .split(" ")
+                  .map((x) => x[0])
+                  .slice(0, 2)}
+              </div>
+              <div className="admin-identity">
+                <b>{account.name}</b>
+                <span>{account.email}</span>
+                <small>
+                  Joined{" "}
+                  {account.createdAt
+                    ? new Date(account.createdAt).toLocaleDateString()
+                    : "before tracking"}{" "}
+                  · ID {account.id}
+                </small>
+              </div>
+              <label>
+                Plan
+                <select
+                  value={account.plan || "Free"}
+                  onChange={(e) =>
+                    updateUser(account.id, { plan: e.target.value })
+                  }
+                >
+                  <option>Free</option>
+                  <option>Pro</option>
+                </select>
+              </label>
+              <label>
+                Status
+                <select
+                  value={account.status || "active"}
+                  onChange={(e) =>
+                    updateUser(account.id, { status: e.target.value })
+                  }
+                >
+                  <option value="active">Active</option>
+                  <option value="pending">Pending</option>
+                  <option value="suspended">Suspended</option>
+                </select>
+              </label>
+            </article>
+          ))}
+        </div>
+      </section>
+      <section className="panel admin-section">
+        <div className="panel-title">
+          <div>
+            <h2>Cash and invitation codes</h2>
+            <p>
+              One-time codes issued after the administrator confirms payment or
+              eligibility.
+            </p>
+          </div>
+        </div>
+        <div className="code-list">
+          {codes.map((item) => (
+            <div key={item.id}>
+              <code>{item.code}</code>
+              <span
+                className={
+                  "badge " + (item.status === "available" ? "completed" : "")
+                }
+              >
+                {item.status}
+              </span>
+              <b>{item.plan}</b>
+              <span>
+                {item.paymentMethod} {item.amount ? "· " + item.amount : ""}
+              </span>
+              <small>
+                {item.usedBy || new Date(item.createdAt).toLocaleDateString()}
+              </small>
+              <button
+                className="icon-btn"
+                onClick={() => navigator.clipboard?.writeText(item.code)}
+                aria-label={"Copy " + item.code}
+              >
+                <Icon name="Copy" />
+              </button>
+            </div>
+          ))}
+        </div>
+      </section>
+      {codeModal && (
+        <AccessCodeModal
+          save={save}
+          close={() => setCodeModal(false)}
+          setToast={setToast}
+        />
+      )}
+    </div>
+  );
+}
+function AccessCodeModal({ save, close, setToast }) {
+  const submit = (e) => {
+    e.preventDefault();
+    const f = Object.fromEntries(new FormData(e.currentTarget));
+    const bytes = crypto.getRandomValues(new Uint8Array(6));
+    const raw = Array.from(bytes)
+      .map((x) => "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"[x % 32])
+      .join("");
+    const code = "DC-" + raw.slice(0, 3) + "-" + raw.slice(3);
+    save((d) => ({
+      ...d,
+      accessCodes: [
+        {
+          id: uid("code"),
+          code,
+          plan: f.plan,
+          paymentMethod: f.paymentMethod,
+          amount: f.amount,
+          note: f.note,
+          status: "available",
+          createdAt: new Date().toISOString(),
+        },
+        ...(d.accessCodes || []),
+      ],
+    }));
+    navigator.clipboard?.writeText(code);
+    setToast("Access code " + code + " generated and copied");
+    close();
+  };
+  return (
+    <Modal title="Generate one-time access code" close={close}>
+      <form className="form" onSubmit={submit}>
+        <div className="premium-note">
+          <Icon name="ShieldCheck" />
+          <div>
+            <b>Single redemption</b>
+            <small>
+              The code becomes unusable after one successful registration.
+            </small>
+          </div>
+        </div>
+        <label>
+          Access plan
+          <select name="plan">
+            <option>Free</option>
+            <option>Pro</option>
+          </select>
+        </label>
+        <label>
+          Payment method
+          <select name="paymentMethod">
+            <option>Cash</option>
+            <option>Online payment</option>
+            <option>Complimentary invitation</option>
+          </select>
+        </label>
+        <label>
+          Amount or receipt reference
+          <input name="amount" placeholder="e.g. 25 USD or receipt #1024" />
+        </label>
+        <label>
+          Administrator note
+          <textarea
+            name="note"
+            placeholder="Optional internal reason for issuing this code."
+          />
+        </label>
+        <button className="primary">
+          <Icon name="WandSparkles" />
+          Generate and copy code
+        </button>
+      </form>
+    </Modal>
+  );
+}
+const bytesToBase64 = (bytes) => btoa(String.fromCharCode(...bytes));
+const base64ToBytes = (text) =>
+  Uint8Array.from(atob(text), (c) => c.charCodeAt(0));
+async function encryptBackup(data, password) {
+  const salt = crypto.getRandomValues(new Uint8Array(16)),
+    iv = crypto.getRandomValues(new Uint8Array(12));
+  const material = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(password),
+    "PBKDF2",
+    false,
+    ["deriveKey"],
+  );
+  const key = await crypto.subtle.deriveKey(
+    { name: "PBKDF2", salt, iterations: 250000, hash: "SHA-256" },
+    material,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt"],
+  );
+  const encrypted = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv },
+    key,
+    new TextEncoder().encode(JSON.stringify(data)),
+  );
+  return JSON.stringify({
+    format: "datachat-encrypted-backup",
+    version: 1,
+    salt: bytesToBase64(salt),
+    iv: bytesToBase64(iv),
+    data: bytesToBase64(new Uint8Array(encrypted)),
+  });
+}
+async function decryptBackup(text, password) {
+  const packed = JSON.parse(text);
+  if (packed.format !== "datachat-encrypted-backup")
+    throw new Error("Unsupported backup format");
+  const material = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(password),
+    "PBKDF2",
+    false,
+    ["deriveKey"],
+  );
+  const key = await crypto.subtle.deriveKey(
+    {
+      name: "PBKDF2",
+      salt: base64ToBytes(packed.salt),
+      iterations: 250000,
+      hash: "SHA-256",
+    },
+    material,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["decrypt"],
+  );
+  const plain = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: base64ToBytes(packed.iv) },
+    key,
+    base64ToBytes(packed.data),
+  );
+  return JSON.parse(new TextDecoder().decode(plain));
+}
+function BackupPanel({ db, save, user, setToast }) {
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const fileRef = useRef(null);
+  const userBackup = () => ({
+    exportedAt: new Date().toISOString(),
+    user: { id: user.id, name: user.name, email: user.email, plan: user.plan },
+    records: db.records.filter((x) => x.owner === user.id),
+    contacts: db.contacts.filter((x) => x.owner === user.id),
+    messages: db.messages.filter((x) => x.owner === user.id),
+    notifications: (db.notifications || []).filter((x) => x.owner === user.id),
+    rateOffers: (db.rateOffers || []).filter((x) => x.owner === user.id),
+    reports: (db.reports || []).filter((x) => x.reporterId === user.id),
+  });
+  const createBackup = async (share) => {
+    if (password.length < 8)
+      return setToast("Use a backup password of at least 8 characters");
+    setBusy(true);
+    try {
+      const encrypted = await encryptBackup(userBackup(), password);
+      const file = new File(
+        [encrypted],
+        "datachat-backup-" + today() + ".dcbackup",
+        { type: "application/json" },
+      );
+      if (share && navigator.share && navigator.canShare?.({ files: [file] }))
+        await navigator.share({
+          title: "Encrypted DataChat backup",
+          text: "Store this encrypted backup safely.",
+          files: [file],
+        });
+      else {
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(file);
+        a.download = file.name;
+        a.click();
+        URL.revokeObjectURL(a.href);
+      }
+      setToast(share ? "Backup ready to share" : "Encrypted backup downloaded");
+    } catch {
+      setToast("Backup could not be created");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const restore = async (file) => {
+    if (!file || password.length < 8)
+      return setToast("Choose a backup and enter its password");
+    if (
+      !confirm(
+        "Restore this backup? Current workspace data for your account will be replaced.",
+      )
+    )
+      return;
+    setBusy(true);
+    try {
+      const data = await decryptBackup(await file.text(), password);
+      if (!data.user || !Array.isArray(data.records)) throw new Error();
+      const scoped = (items, key = "owner") =>
+        (items || []).map((x) => ({ ...x, [key]: user.id }));
+      save((d) => ({
+        ...d,
+        records: [
+          ...d.records.filter((x) => x.owner !== user.id),
+          ...scoped(data.records),
+        ],
+        contacts: [
+          ...d.contacts.filter((x) => x.owner !== user.id),
+          ...scoped(data.contacts),
+        ],
+        messages: [
+          ...d.messages.filter((x) => x.owner !== user.id),
+          ...scoped(data.messages),
+        ],
+        notifications: [
+          ...(d.notifications || []).filter((x) => x.owner !== user.id),
+          ...scoped(data.notifications),
+        ],
+        rateOffers: [
+          ...(d.rateOffers || []).filter((x) => x.owner !== user.id),
+          ...scoped(data.rateOffers),
+        ],
+        reports: [
+          ...(d.reports || []).filter((x) => x.reporterId !== user.id),
+          ...scoped(data.reports, "reporterId"),
+        ],
+      }));
+      setToast("Backup restored successfully");
+    } catch {
+      setToast("Restore failed. Check the file and backup password.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section className="panel backup-card">
+      <div className="panel-title">
+        <div>
+          <h2>Encrypted backup & recovery</h2>
+          <p>
+            Export your entire private workspace without giving administrators
+            access.
+          </p>
+        </div>
+        <Icon name="CloudCog" />
+      </div>
+      <label>
+        Backup password
+        <input
+          type="password"
+          minLength="8"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          placeholder="At least 8 characters"
+        />
+        <small>
+          This password is never stored. If you forget it, the backup cannot be
+          opened.
+        </small>
+      </label>
+      <div className="backup-actions">
+        <button
+          className="secondary"
+          disabled={busy}
+          onClick={() => createBackup(false)}
+        >
+          <Icon name="Download" />
+          Save to phone
+        </button>
+        <button
+          className="secondary"
+          disabled={busy}
+          onClick={() => createBackup(true)}
+        >
+          <Icon name="Share2" />
+          Share to Drive or Gmail
+        </button>
+        <button
+          className="secondary"
+          disabled={busy}
+          onClick={() => fileRef.current?.click()}
+        >
+          <Icon name="History" />
+          Restore backup
+        </button>
+        <input
+          ref={fileRef}
+          hidden
+          type="file"
+          accept=".dcbackup,application/json"
+          onChange={(e) => restore(e.target.files?.[0])}
+        />
+      </div>
+      <div className="backup-scope">
+        <Icon name="LockKeyhole" />
+        <span>
+          Includes your records, contacts, messages, notifications, market
+          offers, and reports. AES-256-GCM encrypted on this device.
+        </span>
+      </div>
+    </section>
+  );
+}
 function Settings({ db, save, user, logout, setToast }) {
   const [agreement, setAgreement] = useState(false),
     [geez, setGeez] = useState(localStorage.getItem("geez") === "true");
@@ -2674,6 +3382,9 @@ function Settings({ db, save, user, logout, setToast }) {
             <span className="badge completed">Active</span>
           </Setting>
         </section>
+        {user.role !== "admin" && (
+          <BackupPanel db={db} save={save} user={user} setToast={setToast} />
+        )}
         <section className="panel pro-card">
           <span className="eyebrow">DATACHAT PRO</span>
           <h2>Professional privileges</h2>
@@ -2766,6 +3477,14 @@ function Settings({ db, save, user, logout, setToast }) {
               You retain ownership of the information you enter. DataChat
               separates records by authenticated account and does not
               intentionally expose one user's workspace to another.
+            </p>
+            <h3>1A. Limited administrator access</h3>
+            <p>
+              Administrators may view account metadata such as your name, email,
+              plan, account status, registration date, and access-code history
+              to operate the service. The administrator console is not
+              authorized to display your messages, contacts, financial records,
+              transaction security keys, or encrypted backup contents.
             </p>
             <h3>2. Financial responsibility</h3>
             <p>

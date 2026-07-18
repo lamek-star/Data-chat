@@ -11,6 +11,14 @@ npm run dev
 
 Demo: `demo@datachat.app` / `demo123`
 
+Local administrator: `admin@datachat.app` / `admin123`
+
+The administrator console manages account metadata, plans, status, external links, and one-time access codes. It intentionally has no interface for users' messages, contacts, financial records, transaction keys, or encrypted backup contents. Replace the local demonstration credentials and browser storage with server-side authentication, role enforcement, audit logs, and a production database before deployment.
+
+## Account access and backups
+
+New registration requires a single-use administrator code and acceptance of the User Access & Privacy Agreement. Administrators can issue codes for cash payments, online payments, or invitations. Users can create password-encrypted `.dcbackup` files using AES-256-GCM, download them to phone storage, share them through the device share sheet to Drive/Gmail, and restore them after confirmation.
+
 ## Android and iOS
 
 The project uses Capacitor with application ID `com.lamekstar.datachat`.
