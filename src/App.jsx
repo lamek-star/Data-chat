@@ -1,6 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { motion } from "framer-motion";
+import {
+  getCryptoPrices,
+  getFxRates,
+  getMetalPrice,
+  getSupportedCurrencies,
+} from "./services/publicApis";
 import * as I from "lucide-react";
 import QRCode from "qrcode";
 import { Html5Qrcode } from "html5-qrcode";
@@ -309,6 +315,42 @@ const countries = [
   "South Africa",
   "Other",
 ];
+const priorityCurrencies = [
+  "AED",
+  "USD",
+  "EUR",
+  "GBP",
+  "SAR",
+  "ETB",
+  "CAD",
+  "AUD",
+  "CHF",
+  "TRY",
+  "JPY",
+  "CNY",
+  "INR",
+  "KES",
+  "ZAR",
+  "QAR",
+  "KWD",
+  "BHD",
+  "OMR",
+];
+function useCurrencyCodes(includeOther = false) {
+  const [codes, setCodes] = useState(priorityCurrencies);
+  useEffect(() => {
+    const controller = new AbortController();
+    getSupportedCurrencies({ signal: controller.signal })
+      .then((rows) =>
+        setCodes([
+          ...new Set([...priorityCurrencies, ...rows.map((x) => x.code)]),
+        ]),
+      )
+      .catch(() => {});
+    return () => controller.abort();
+  }, []);
+  return includeOther ? [...codes, "Other"] : codes;
+}
 function Icon({ name, size = 18 }) {
   const C = I[name] || I.Circle;
   return <C size={size} strokeWidth={1.8} />;
@@ -1092,22 +1134,14 @@ function RatesMarketplace({ db, save, user, setToast, setPage }) {
     const controller = new AbortController();
     setAssets((x) => ({ ...x, loading: true, error: "" }));
     Promise.allSettled([
-      fetch("https://api.gold-api.com/price/XAU", {
-        signal: controller.signal,
-      }).then((r) => (r.ok ? r.json() : Promise.reject())),
-      fetch("https://api.gold-api.com/price/XAG", {
-        signal: controller.signal,
-      }).then((r) => (r.ok ? r.json() : Promise.reject())),
-      fetch(
-        `https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,solana,tether&vs_currencies=${currency}&include_24hr_change=true`,
-        { signal: controller.signal },
-      ).then((r) => (r.ok ? r.json() : Promise.reject())),
+      getMetalPrice("XAU", { signal: controller.signal }),
+      getMetalPrice("XAG", { signal: controller.signal }),
+      getCryptoPrices(currency, { signal: controller.signal }),
       currency === "usd"
         ? Promise.resolve({ rates: { USD: 1 } })
-        : fetch(
-            `https://api.frankfurter.dev/v1/latest?base=USD&symbols=${currency.toUpperCase()}`,
-            { signal: controller.signal },
-          ).then((r) => r.json()),
+        : getFxRates("USD", [currency.toUpperCase()], {
+            signal: controller.signal,
+          }),
     ]).then(([gold, silver, crypto, fx]) => {
       const conversion =
         fx.status === "fulfilled"
@@ -1159,14 +1193,24 @@ function RatesMarketplace({ db, save, user, setToast, setPage }) {
     const controller = new AbortController();
     setLoading(true);
     setError("");
-    fetch(
-      `https://api.frankfurter.dev/v1/latest?base=${base}&symbols=USD,EUR,GBP,CAD,JPY,CHF,TRY,AUD,CNY`,
+    getFxRates(
+      base,
+      [
+        "USD",
+        "EUR",
+        "GBP",
+        "CAD",
+        "JPY",
+        "CHF",
+        "TRY",
+        "AUD",
+        "CNY",
+        "AED",
+        "SAR",
+        "INR",
+      ],
       { signal: controller.signal },
     )
-      .then((r) => {
-        if (!r.ok) throw new Error("Rate service unavailable");
-        return r.json();
-      })
       .then((data) => {
         setLive(data);
         setLoading(false);
@@ -1514,28 +1558,7 @@ function RateOfferModal({ user, save, close, setToast }) {
     setToast("Your market rate was published");
     close();
   };
-  const currencies = [
-    "AED",
-    "USD",
-    "EUR",
-    "GBP",
-    "SAR",
-    "ETB",
-    "CAD",
-    "AUD",
-    "CHF",
-    "TRY",
-    "JPY",
-    "CNY",
-    "INR",
-    "KES",
-    "ZAR",
-    "QAR",
-    "KWD",
-    "BHD",
-    "OMR",
-    "Other",
-  ];
+  const currencies = useCurrencyCodes(true);
   return (
     <Modal title="Publish a market rate" close={close} wide>
       <form className="form grid rate-form" onSubmit={submit}>
@@ -3265,6 +3288,7 @@ function ShareRecordModal({ record, db, save, user, close, setToast }) {
   );
 }
 function RecordModal({ record, user, save, close, setToast }) {
+  const currencies = useCurrencyCodes();
   const isNew = !record.id,
     submit = (e) => {
       e.preventDefault();
@@ -3354,26 +3378,7 @@ function RecordModal({ record, user, save, close, setToast }) {
         <label>
           Currency
           <select name="currency" defaultValue={record.currency || "USD"}>
-            {[
-              "AED",
-              "USD",
-              "EUR",
-              "GBP",
-              "SAR",
-              "ETB",
-              "CAD",
-              "AUD",
-              "CHF",
-              "JPY",
-              "CNY",
-              "INR",
-              "KES",
-              "ZAR",
-              "QAR",
-              "KWD",
-              "BHD",
-              "OMR",
-            ].map((x) => (
+            {currencies.map((x) => (
               <option key={x}>{x}</option>
             ))}
           </select>
