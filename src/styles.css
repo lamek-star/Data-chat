@@ -421,6 +421,90 @@ header p,
   opacity: 0.65;
   margin-top: 5px;
 }
+.transaction-message {
+  width: min(430px, 82%);
+  overflow: hidden;
+  border: 1px solid #40516b;
+  border-radius: 16px;
+  background: #101d30;
+  box-shadow: 0 10px 28px #0004;
+  animation: bubble-in 220ms ease-out both;
+}
+.transaction-message.me {
+  align-self: flex-end;
+  border-color: #8b6d27;
+}
+.transaction-message.them {
+  align-self: flex-start;
+}
+.transaction-message-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 11px 14px;
+  background: #172942;
+}
+.transaction-message-head span {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.transaction-message-head svg {
+  color: var(--gold2);
+}
+.transaction-message-head small {
+  color: var(--muted);
+}
+.transaction-message-body {
+  display: grid;
+  grid-template-columns: 124px 1fr;
+  gap: 14px;
+  padding: 14px;
+}
+.transaction-message-body img {
+  width: 124px;
+  aspect-ratio: 1;
+  padding: 6px;
+  border-radius: 10px;
+  background: white;
+}
+.transaction-message-body dl div {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 2px;
+  padding: 4px 0;
+  border: 0;
+}
+.transaction-message-body dt {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.transaction-message-body dd {
+  color: white;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.transaction-add {
+  width: calc(100% - 28px);
+  min-height: 44px;
+  margin: 0 14px 14px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #6f8b7c;
+  border-radius: 10px;
+  background: #17372e;
+  color: #9ee2c2;
+  font-weight: 600;
+}
+.transaction-add:disabled {
+  border-color: #35445a;
+  background: #182537;
+  color: #78899e;
+  cursor: default;
+}
 .composer {
   border-top: 1px solid var(--border);
   display: flex;
@@ -2753,6 +2837,17 @@ dd {
   }
   .contact-send {
     grid-template-columns: 1fr;
+  }
+  .transaction-message {
+    width: 94%;
+  }
+  .transaction-message-body {
+    grid-template-columns: 92px 1fr;
+    gap: 10px;
+    padding: 10px;
+  }
+  .transaction-message-body img {
+    width: 92px;
   }
 }
 @media (max-height: 680px) {

@@ -220,6 +220,40 @@ const money = (n, c = "USD") =>
 const today = () => new Date().toISOString().slice(0, 10);
 const uid = (p = "id") =>
   p + "-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+const transactionPayload = (record) => ({
+  version: 1,
+  type: "datachat-transaction-record",
+  reference: record.id,
+  sender: record.sender,
+  senderPhone: record.senderPhone || "",
+  receiver: record.receiver,
+  receiverPhone: record.receiverPhone || "",
+  from: record.from,
+  to: record.to,
+  amount: Number(record.amount) || 0,
+  currency: record.currency || "USD",
+  rate: Number(record.rate) || 1,
+  account: record.account || "",
+  category: record.category || "Remittance",
+  date: record.date || today(),
+  status: record.status || "Pending",
+  securityKey: record.key || "",
+  note: record.remark || "",
+});
+const transactionText = (data) =>
+  [
+    "DATACHAT TRANSACTION RECORD",
+    `Reference: ${data.reference}`,
+    `Sender: ${data.sender} (${data.senderPhone || "No phone"})`,
+    `Receiver: ${data.receiver} (${data.receiverPhone || "No phone"})`,
+    `Route: ${data.from} to ${data.to}`,
+    `Amount: ${data.amount} ${data.currency}`,
+    `Rate: ${data.rate}`,
+    `Date: ${data.date}`,
+    `Status: ${data.status}`,
+    `Security key: ${data.securityKey || "Not generated"}`,
+    `Note: ${data.note || "None"}`,
+  ].join("\n");
 const downloadText = (filename, content) => {
   const url = URL.createObjectURL(
     new Blob([content], { type: "text/plain;charset=utf-8" }),
@@ -1449,16 +1483,25 @@ function RateOfferModal({ user, save, close, setToast }) {
     close();
   };
   const currencies = [
+    "AED",
     "USD",
     "EUR",
     "GBP",
-    "AED",
     "SAR",
     "ETB",
     "CAD",
     "AUD",
     "CHF",
     "TRY",
+    "JPY",
+    "CNY",
+    "INR",
+    "KES",
+    "ZAR",
+    "QAR",
+    "KWD",
+    "BHD",
+    "OMR",
     "Other",
   ];
   return (
@@ -1766,7 +1809,8 @@ function Home({ db, save, user, setToast, setPage }) {
   };
   const sendTransaction = (record) => {
     if (!c || c.blocked) return;
-    const content = `TRANSACTION ${record.id}\nReceiver: ${record.receiver}\nAmount: ${record.amount} ${record.currency}\nRoute: ${record.from} to ${record.to}\nSecurity key: ${record.key || "Not generated"}`;
+    const transaction = transactionPayload(record);
+    const content = transactionText(transaction);
     save((d) => ({
       ...d,
       messages: [
@@ -1782,6 +1826,7 @@ function Home({ db, save, user, setToast, setPage }) {
             minute: "2-digit",
           }),
           recordId: record.id,
+          transaction,
         },
       ],
     }));
@@ -1897,12 +1942,23 @@ function Home({ db, save, user, setToast, setPage }) {
               </button>
             </div>
             <div className="messages" ref={messagesRef}>
-              {msgs.map((m) => (
-                <div key={m.id} className={"bubble " + m.sender}>
-                  {m.content}
-                  <small>{m.time}</small>
-                </div>
-              ))}
+              {msgs.map((m) =>
+                m.transaction ? (
+                  <TransactionChatCard
+                    key={m.id}
+                    message={m}
+                    db={db}
+                    save={save}
+                    user={user}
+                    setToast={setToast}
+                  />
+                ) : (
+                  <div key={m.id} className={"bubble " + m.sender}>
+                    {m.content}
+                    <small>{m.time}</small>
+                  </div>
+                ),
+              )}
             </div>
             <form className="composer" onSubmit={send}>
               {attachments && (
@@ -2636,39 +2692,98 @@ function RecordRow({ r, edit, del, update, handoff, share }) {
     </tr>
   );
 }
+function TransactionChatCard({ message, db, save, user, setToast }) {
+  const [qr, setQr] = useState("");
+  const data = message.transaction;
+  const alreadyAdded = db.records.some(
+    (x) => x.owner === user.id && x.importedFromMessage === message.id,
+  );
+  useEffect(() => {
+    QRCode.toDataURL(JSON.stringify(data), {
+      width: 220,
+      margin: 3,
+      errorCorrectionLevel: "M",
+    }).then(setQr);
+  }, [message.id]);
+  const add = () => {
+    if (alreadyAdded) return;
+    const record = {
+      id: `COPY-${data.reference}-${Date.now().toString(36).slice(-4)}`,
+      owner: user.id,
+      sender: data.sender,
+      senderPhone: data.senderPhone,
+      receiver: data.receiver,
+      receiverPhone: data.receiverPhone,
+      from: data.from,
+      to: data.to,
+      amount: data.amount,
+      currency: data.currency,
+      rate: data.rate,
+      account: data.account,
+      category: data.category,
+      date: data.date,
+      status: "Pending",
+      tag: "Received in chat",
+      key: data.securityKey,
+      remark: data.note,
+      sourceReference: data.reference,
+      importedFromMessage: message.id,
+    };
+    save((d) => ({ ...d, records: [record, ...d.records] }));
+    setToast(`${data.reference} added to your transactions`);
+  };
+  return (
+    <article className={`transaction-message ${message.sender}`}>
+      <div className="transaction-message-head">
+        <span>
+          <Icon name="ReceiptText" />
+          <b>{data.reference}</b>
+        </span>
+        <small>{message.time}</small>
+      </div>
+      <div className="transaction-message-body">
+        {qr && (
+          <img
+            src={qr}
+            alt={`QR code for transaction ${data.reference}`}
+            loading="lazy"
+          />
+        )}
+        <dl>
+          <div>
+            <dt>Receiver</dt>
+            <dd>{data.receiver}</dd>
+          </div>
+          <div>
+            <dt>Amount</dt>
+            <dd>
+              {data.amount} {data.currency}
+            </dd>
+          </div>
+          <div>
+            <dt>Route</dt>
+            <dd>
+              {data.from} → {data.to}
+            </dd>
+          </div>
+          <div>
+            <dt>Security key</dt>
+            <dd className="mono">{data.securityKey || "Not generated"}</dd>
+          </div>
+        </dl>
+      </div>
+      <button className="transaction-add" onClick={add} disabled={alreadyAdded}>
+        <Icon name={alreadyAdded ? "CircleCheck" : "PlusCircle"} />
+        {alreadyAdded ? "Added to transactions" : "Add to my transactions"}
+      </button>
+    </article>
+  );
+}
 function ShareRecordModal({ record, db, save, user, close, setToast }) {
   const [qr, setQr] = useState("");
   const [contactId, setContactId] = useState("");
-  const data = {
-    version: 1,
-    type: "datachat-transaction-record",
-    reference: record.id,
-    sender: record.sender,
-    senderPhone: record.senderPhone,
-    receiver: record.receiver,
-    receiverPhone: record.receiverPhone,
-    route: `${record.from} to ${record.to}`,
-    amount: record.amount,
-    currency: record.currency,
-    rate: record.rate,
-    date: record.date,
-    status: record.status,
-    securityKey: record.key,
-    note: record.remark || "",
-  };
-  const text = [
-    "DATACHAT TRANSACTION RECORD",
-    `Reference: ${data.reference}`,
-    `Sender: ${data.sender} (${data.senderPhone || "No phone"})`,
-    `Receiver: ${data.receiver} (${data.receiverPhone || "No phone"})`,
-    `Route: ${data.route}`,
-    `Amount: ${data.amount} ${data.currency}`,
-    `Rate: ${data.rate}`,
-    `Date: ${data.date}`,
-    `Status: ${data.status}`,
-    `Security key: ${data.securityKey || "Not generated"}`,
-    `Note: ${data.note || "None"}`,
-  ].join("\n");
+  const data = transactionPayload(record);
+  const text = transactionText(data);
   useEffect(() => {
     QRCode.toDataURL(JSON.stringify(data), {
       width: 340,
@@ -2678,7 +2793,21 @@ function ShareRecordModal({ record, db, save, user, close, setToast }) {
   }, [record.id]);
   const share = async () => {
     try {
-      if (navigator.share)
+      const qrBlob = qr ? await (await fetch(qr)).blob() : null;
+      const qrFile = qrBlob
+        ? new File([qrBlob], `${record.id}-qr.png`, { type: "image/png" })
+        : null;
+      if (
+        navigator.share &&
+        qrFile &&
+        navigator.canShare?.({ files: [qrFile] })
+      )
+        await navigator.share({
+          title: `DataChat ${record.id}`,
+          text,
+          files: [qrFile],
+        });
+      else if (navigator.share)
         await navigator.share({ title: `DataChat ${record.id}`, text });
       else {
         await navigator.clipboard.writeText(text);
@@ -2705,6 +2834,7 @@ function ShareRecordModal({ record, db, save, user, close, setToast }) {
           sender: "me",
           content: text,
           recordId: record.id,
+          transaction: data,
           time: new Date().toLocaleTimeString([], {
             hour: "2-digit",
             minute: "2-digit",
@@ -2884,7 +3014,26 @@ function RecordModal({ record, user, save, close, setToast }) {
         <label>
           Currency
           <select name="currency" defaultValue={record.currency || "USD"}>
-            {["USD", "EUR", "GBP", "AED", "SAR", "ETB", "CAD"].map((x) => (
+            {[
+              "AED",
+              "USD",
+              "EUR",
+              "GBP",
+              "SAR",
+              "ETB",
+              "CAD",
+              "AUD",
+              "CHF",
+              "JPY",
+              "CNY",
+              "INR",
+              "KES",
+              "ZAR",
+              "QAR",
+              "KWD",
+              "BHD",
+              "OMR",
+            ].map((x) => (
               <option key={x}>{x}</option>
             ))}
           </select>
