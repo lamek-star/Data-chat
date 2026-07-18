@@ -383,6 +383,7 @@ header p,
   gap: 12px;
   background-image: radial-gradient(#30405a 1px, transparent 1px);
   background-size: 28px 28px;
+  scroll-behavior: smooth;
 }
 .bubble {
   max-width: min(72%, 620px);
@@ -390,6 +391,18 @@ header p,
   border-radius: 15px;
   background: #17253a;
   line-height: 1.45;
+  white-space: pre-wrap;
+  animation: bubble-in 220ms ease-out both;
+}
+@keyframes bubble-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 .bubble.me {
   align-self: flex-end;
@@ -415,6 +428,7 @@ header p,
   gap: 8px;
   padding: 12px 24px calc(12px + env(safe-area-inset-bottom));
   background: #091323;
+  position: relative;
 }
 .composer input {
   height: 46px;
@@ -424,6 +438,68 @@ header p,
   border-radius: 12px;
   padding: 0 15px;
   color: white;
+  transition:
+    border-color 180ms ease,
+    box-shadow 180ms ease,
+    background 180ms ease;
+}
+.composer input:focus {
+  border-color: #b68c2d;
+  box-shadow: 0 0 0 3px #d7a62b22;
+  background: #13233a;
+}
+.transaction-picker {
+  position: absolute;
+  left: 24px;
+  bottom: calc(100% + 10px);
+  width: min(430px, calc(100vw - 48px));
+  max-height: 310px;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid #41516a;
+  border-radius: 14px;
+  background: #101d30;
+  box-shadow: 0 20px 60px #0009;
+  z-index: 10;
+  animation: picker-in 180ms ease-out;
+}
+.transaction-picker > div,
+.transaction-picker > button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+}
+.transaction-picker > div {
+  padding: 4px 6px 10px;
+}
+.transaction-picker > button {
+  min-height: 58px;
+  padding: 10px 12px;
+  border: 0;
+  border-top: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: white;
+  text-align: left;
+}
+.transaction-picker > button:hover,
+.transaction-picker > button:focus-visible {
+  background: #1a2b43;
+}
+.transaction-picker span {
+  display: grid;
+  gap: 3px;
+}
+.transaction-picker small {
+  color: var(--muted);
+}
+@keyframes picker-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
 }
 .send {
   width: 46px;
@@ -739,6 +815,8 @@ td small {
   border: 1px solid #34435c;
   border-radius: 16px;
   box-shadow: 0 28px 80px #0008;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 .modal.wide {
   width: min(850px, 100%);
@@ -2394,6 +2472,22 @@ dd {
   background: #fff;
   border-radius: 16px;
 }
+.modal:not(.wide) .share-card {
+  padding: 16px 24px 20px;
+  gap: 8px;
+}
+.modal:not(.wide) .share-card img {
+  width: min(190px, 58vw);
+  margin-bottom: 4px;
+}
+.modal:not(.wide) .share-card > p {
+  margin: 4px 0;
+  color: var(--muted);
+}
+.modal:not(.wide) .share-text textarea {
+  min-height: 125px;
+  max-height: 170px;
+}
 .share-summary {
   display: grid;
   gap: 4px;
@@ -2434,6 +2528,52 @@ dd {
   display: grid;
   align-content: start;
   gap: 16px;
+}
+.contact-send {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  align-items: end;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #0a1525;
+}
+.contact-send .primary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.avatar.has-photo {
+  overflow: hidden;
+  background: #16253a;
+}
+.avatar.has-photo img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.profile-photo-control {
+  position: relative;
+  flex: 0 0 auto;
+}
+.photo-button {
+  position: absolute;
+  right: -7px;
+  bottom: -7px;
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  border: 2px solid #101c2e;
+  background: var(--gold);
+  color: #101724;
+  cursor: pointer;
+}
+.photo-button input {
+  display: none;
 }
 
 /* Pro entitlement */
@@ -2610,5 +2750,27 @@ dd {
   }
   .premium-gate {
     padding: 32px 20px;
+  }
+  .contact-send {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-height: 680px) {
+  .scrim {
+    padding: 8px;
+    align-items: center;
+  }
+  .modal {
+    max-height: calc(100dvh - 16px);
+  }
+  .modal:not(.wide) .share-card img {
+    width: 145px;
+  }
+  .modal:not(.wide) .share-text textarea {
+    min-height: 95px;
+    max-height: 110px;
+  }
+  .modal-head {
+    padding-block: 12px;
   }
 }

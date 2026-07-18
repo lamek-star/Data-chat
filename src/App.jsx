@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import * as I from "lucide-react";
 import QRCode from "qrcode";
 import { Html5Qrcode } from "html5-qrcode";
@@ -271,10 +272,11 @@ function App() {
       setOnboarding(true);
   };
   if (!user) return <Auth db={db} save={save} login={login} />;
-  const props = { db, save, user, setToast };
+  const activeUser = db.users.find((x) => x.id === user.id) || user;
+  const props = { db, save, user: activeUser, setToast };
   return (
     <div className="app">
-      <Sidebar page={page} setPage={setPage} user={user} />
+      <Sidebar page={page} setPage={setPage} user={activeUser} />
       <main>
         {page === "home" && <Home {...props} setPage={setPage} />}{" "}
         {page === "portal" && <Portal {...props} setPage={setPage} />}{" "}
@@ -866,18 +868,32 @@ function Sidebar({ page, setPage, user }) {
         ))}
       </nav>
       <div className="side-user">
-        <div className="avatar">
-          {user.name
-            .split(" ")
-            .map((x) => x[0])
-            .slice(0, 2)}
-        </div>
+        <UserAvatar person={user} />
         <div>
           <b>{user.name}</b>
           <small>{user.plan} workspace</small>
         </div>
       </div>
     </aside>
+  );
+}
+function UserAvatar({ person, large = false }) {
+  const initials =
+    person?.name
+      ?.split(" ")
+      .map((x) => x[0])
+      .slice(0, 2)
+      .join("") || "U";
+  return (
+    <div
+      className={`avatar ${large ? "large" : ""} ${person?.profilePhoto ? "has-photo" : ""}`}
+    >
+      {person?.profilePhoto ? (
+        <img src={person.profilePhoto} alt={`${person.name} profile`} />
+      ) : (
+        initials
+      )}
+    </div>
   );
 }
 function MobileNav({ page, setPage }) {
@@ -1717,7 +1733,9 @@ function Home({ db, save, user, setToast, setPage }) {
     [selected, setSelected] = useState(contacts[0]?.id),
     [search, setSearch] = useState(""),
     [add, setAdd] = useState(false),
-    [report, setReport] = useState(null);
+    [report, setReport] = useState(null),
+    [attachments, setAttachments] = useState(false);
+  const messagesRef = useRef(null);
   const c = contacts.find((x) => x.id === selected),
     msgs = db.messages.filter(
       (x) => x.owner === user.id && x.contact === selected,
@@ -1746,6 +1764,36 @@ function Home({ db, save, user, setToast, setPage }) {
     }));
     inp.value = "";
   };
+  const sendTransaction = (record) => {
+    if (!c || c.blocked) return;
+    const content = `TRANSACTION ${record.id}\nReceiver: ${record.receiver}\nAmount: ${record.amount} ${record.currency}\nRoute: ${record.from} to ${record.to}\nSecurity key: ${record.key || "Not generated"}`;
+    save((d) => ({
+      ...d,
+      messages: [
+        ...d.messages,
+        {
+          id: uid("m"),
+          owner: user.id,
+          contact: c.id,
+          sender: "me",
+          content,
+          time: new Date().toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+          }),
+          recordId: record.id,
+        },
+      ],
+    }));
+    setAttachments(false);
+    setToast(`Transaction ${record.id} sent to ${c.name}`);
+  };
+  useEffect(() => {
+    messagesRef.current?.scrollTo({
+      top: messagesRef.current.scrollHeight,
+      behavior: "smooth",
+    });
+  }, [msgs.length, selected]);
   return (
     <div className="home">
       <div className={"contact-pane " + (c ? "has-chat" : "")}>
@@ -1848,7 +1896,7 @@ function Home({ db, save, user, setToast, setPage }) {
                 <Icon name="ShieldAlert" />
               </button>
             </div>
-            <div className="messages">
+            <div className="messages" ref={messagesRef}>
               {msgs.map((m) => (
                 <div key={m.id} className={"bubble " + m.sender}>
                   {m.content}
@@ -1857,7 +1905,45 @@ function Home({ db, save, user, setToast, setPage }) {
               ))}
             </div>
             <form className="composer" onSubmit={send}>
-              <button type="button" className="icon-btn">
+              {attachments && (
+                <div className="transaction-picker">
+                  <div>
+                    <b>Share a transaction</b>
+                    <button
+                      type="button"
+                      className="icon-btn"
+                      onClick={() => setAttachments(false)}
+                      aria-label="Close transaction picker"
+                    >
+                      <Icon name="X" />
+                    </button>
+                  </div>
+                  {db.records
+                    .filter((x) => x.owner === user.id)
+                    .map((r) => (
+                      <button
+                        type="button"
+                        key={r.id}
+                        onClick={() => sendTransaction(r)}
+                      >
+                        <span>
+                          <b>{r.id}</b>
+                          <small>
+                            {r.receiver} · {r.amount} {r.currency}
+                          </small>
+                        </span>
+                        <Icon name="Send" />
+                      </button>
+                    ))}
+                </div>
+              )}
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={() => setAttachments((x) => !x)}
+                aria-label="Add transaction to message"
+                title="Share transaction"
+              >
                 <Icon name="Paperclip" />
               </button>
               <input
@@ -2428,6 +2514,9 @@ function Records({ db, save, user, setToast }) {
       {sharing && (
         <ShareRecordModal
           record={sharing}
+          db={db}
+          save={save}
+          user={user}
           close={() => setSharing(null)}
           setToast={setToast}
         />
@@ -2547,8 +2636,9 @@ function RecordRow({ r, edit, del, update, handoff, share }) {
     </tr>
   );
 }
-function ShareRecordModal({ record, close, setToast }) {
+function ShareRecordModal({ record, db, save, user, close, setToast }) {
   const [qr, setQr] = useState("");
+  const [contactId, setContactId] = useState("");
   const data = {
     version: 1,
     type: "datachat-transaction-record",
@@ -2599,6 +2689,32 @@ function ShareRecordModal({ record, close, setToast }) {
         setToast("Sharing failed; use Copy text or Download instead");
     }
   };
+  const sendToContact = () => {
+    const contact = db.contacts.find(
+      (x) => x.id === contactId && x.owner === user.id,
+    );
+    if (!contact) return setToast("Choose a contact first");
+    save((d) => ({
+      ...d,
+      messages: [
+        ...d.messages,
+        {
+          id: uid("m"),
+          owner: user.id,
+          contact: contact.id,
+          sender: "me",
+          content: text,
+          recordId: record.id,
+          time: new Date().toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+          }),
+        },
+      ],
+    }));
+    setToast(`${record.id} sent to ${contact.name}`);
+    close();
+  };
   return (
     <Modal title="Share transaction record" close={close} wide>
       <div className="record-share">
@@ -2626,6 +2742,30 @@ function ShareRecordModal({ record, close, setToast }) {
             Transaction text
             <textarea readOnly value={text} />
           </label>
+          <div className="contact-send">
+            <select
+              aria-label="Choose contact"
+              value={contactId}
+              onChange={(e) => setContactId(e.target.value)}
+            >
+              <option value="">Choose a contact…</option>
+              {db.contacts
+                .filter((x) => x.owner === user.id && !x.blocked)
+                .map((x) => (
+                  <option key={x.id} value={x.id}>
+                    {x.name} · {x.phone}
+                  </option>
+                ))}
+            </select>
+            <button
+              className="primary"
+              onClick={sendToContact}
+              disabled={!contactId}
+            >
+              <Icon name="MessageCircle" />
+              Send to contact
+            </button>
+          </div>
           <div className="share-actions">
             <button className="primary" onClick={share}>
               <Icon name="Share2" />
@@ -3676,6 +3816,23 @@ function BackupPanel({ db, save, user, setToast }) {
 function Settings({ db, save, user, logout, setToast }) {
   const [agreement, setAgreement] = useState(false),
     [geez, setGeez] = useState(localStorage.getItem("geez") === "true");
+  const choosePhoto = (file) => {
+    if (!file) return;
+    if (!file.type.startsWith("image/") || file.size > 2 * 1024 * 1024)
+      return setToast("Choose a JPG, PNG or WebP image under 2 MB");
+    const reader = new FileReader();
+    reader.onload = () => {
+      const profilePhoto = reader.result;
+      save((d) => ({
+        ...d,
+        users: d.users.map((x) =>
+          x.id === user.id ? { ...x, profilePhoto } : x,
+        ),
+      }));
+      setToast("Profile picture updated");
+    };
+    reader.readAsDataURL(file);
+  };
   return (
     <div className="page settings">
       <Header
@@ -3683,11 +3840,16 @@ function Settings({ db, save, user, logout, setToast }) {
         sub="Manage your workspace, appearance and privacy"
       />
       <section className="profile panel">
-        <div className="avatar large">
-          {user.name
-            .split(" ")
-            .map((x) => x[0])
-            .slice(0, 2)}
+        <div className="profile-photo-control">
+          <UserAvatar person={user} large />
+          <label className="photo-button" title="Choose profile picture">
+            <Icon name="Camera" />
+            <input
+              type="file"
+              accept="image/jpeg,image/png,image/webp"
+              onChange={(e) => choosePhoto(e.target.files?.[0])}
+            />
+          </label>
         </div>
         <div>
           <h2>{user.name}</h2>
@@ -3885,7 +4047,7 @@ function Setting({ icon, title, text, children }) {
   );
 }
 function Modal({ title, close, children, wide }) {
-  return (
+  return createPortal(
     <div
       className="scrim"
       onMouseDown={(e) => e.target === e.currentTarget && close()}
@@ -3903,7 +4065,8 @@ function Modal({ title, close, children, wide }) {
         </div>
         {children}
       </section>
-    </div>
+    </div>,
+    document.body,
   );
 }
 function Empty({ icon, title, text }) {
