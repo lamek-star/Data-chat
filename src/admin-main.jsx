@@ -11,6 +11,9 @@ import {
   Network,
   MapPinned,
   Plus,
+  Download,
+  Trash2,
+  Vault,
 } from "lucide-react";
 import "./styles.css";
 
@@ -144,6 +147,30 @@ function AdminApp() {
     e.currentTarget.reset();
     setToast(`${community.name} created`);
   };
+  const downloadRecovery = (item) => {
+    const url = URL.createObjectURL(
+      new Blob([item.encrypted], { type: "application/json" }),
+    );
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = item.filename;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+    setToast("Encrypted recovery file downloaded");
+  };
+  const removeRecovery = (id) => {
+    if (
+      !confirm(
+        "Delete this administrator recovery copy? This cannot be undone.",
+      )
+    )
+      return;
+    setDb((d) => ({
+      ...d,
+      recoveryBackups: (d.recoveryBackups || []).filter((x) => x.id !== id),
+    }));
+    setToast("Recovery copy deleted");
+  };
   return (
     <div className="admin-shell">
       <header className="admin-top">
@@ -185,8 +212,9 @@ function AdminApp() {
           <div>
             <b>Private workspace data stays hidden</b>
             <p>
-              This separate portal only exposes account metadata and access
-              controls—not messages, contacts, records, keys, or backups.
+              This portal exposes account metadata, access controls, and only
+              user-consented encrypted recovery files. Messages, contacts,
+              records, security keys, and backup passwords remain private.
             </p>
           </div>
         </div>
@@ -373,6 +401,70 @@ function AdminApp() {
                 );
               })}
             </div>
+          </div>
+        </section>
+        <section className="panel admin-vault">
+          <div className="panel-title">
+            <div>
+              <h2>
+                <Vault /> Pro recovery vault
+              </h2>
+              <p>
+                Encrypted copies deliberately stored by Pro users. You can
+                retain or return a file, but cannot open it without the user’s
+                password.
+              </p>
+            </div>
+            <span className="badge completed">
+              {(db.recoveryBackups || []).length} stored
+            </span>
+          </div>
+          <div className="recovery-list">
+            {!(db.recoveryBackups || []).length && (
+              <div className="vault-empty">
+                <Vault />
+                <b>No recovery copies yet</b>
+                <small>
+                  A Pro user must explicitly choose “Store with admin.”
+                </small>
+              </div>
+            )}
+            {(db.recoveryBackups || []).map((x) => (
+              <article key={x.id}>
+                <span className="recovery-file">
+                  <Vault />
+                </span>
+                <div>
+                  <b>{x.userName}</b>
+                  <span>{x.userEmail}</span>
+                  <small>
+                    {new Date(x.createdAt).toLocaleString()} · {x.format}
+                  </small>
+                  {x.passwordHint && <em>Password hint: {x.passwordHint}</em>}
+                </div>
+                <button
+                  className="secondary"
+                  onClick={() => downloadRecovery(x)}
+                >
+                  <Download />
+                  Download
+                </button>
+                <button
+                  className="icon-btn danger"
+                  onClick={() => removeRecovery(x.id)}
+                  aria-label={`Delete recovery copy for ${x.userName}`}
+                >
+                  <Trash2 />
+                </button>
+              </article>
+            ))}
+          </div>
+          <div className="vault-warning">
+            <LockKeyhole />
+            <span>
+              Never request or store the user’s actual backup password. Return
+              the encrypted file and let the user decrypt it privately.
+            </span>
           </div>
         </section>
         <section className="panel">

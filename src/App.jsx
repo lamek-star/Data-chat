@@ -2980,9 +2980,18 @@ function RecordRow({ r, edit, del, update, handoff, share }) {
 function TransactionChatCard({ message, db, save, user, setToast }) {
   const [qr, setQr] = useState("");
   const [expanded, setExpanded] = useState(false);
+  const [keyVisible, setKeyVisible] = useState(false);
   const data = message.transaction;
-  const alreadyAdded = db.records.some(
-    (x) => x.owner === user.id && x.importedFromMessage === message.id,
+  const existingRecord = db.records.find(
+    (x) =>
+      x.owner === user.id &&
+      (x.importedFromMessage === message.id ||
+        x.id === data.reference ||
+        x.sourceReference === data.reference ||
+        (data.securityKey &&
+          x.key === data.securityKey &&
+          x.receiver?.trim().toLowerCase() ===
+            data.receiver?.trim().toLowerCase())),
   );
   useEffect(() => {
     QRCode.toDataURL(JSON.stringify(data), {
@@ -2992,7 +3001,10 @@ function TransactionChatCard({ message, db, save, user, setToast }) {
     }).then(setQr);
   }, [message.id]);
   const add = () => {
-    if (alreadyAdded) return;
+    if (existingRecord)
+      return setToast(
+        `Transaction ${data.reference} already exists. No duplicate was added.`,
+      );
     const record = {
       id: `COPY-${data.reference}-${Date.now().toString(36).slice(-4)}`,
       owner: user.id,
@@ -3069,13 +3081,35 @@ function TransactionChatCard({ message, db, save, user, setToast }) {
           </div>
           <div>
             <dt>Security key</dt>
-            <dd className="mono">{data.securityKey || "Not generated"}</dd>
+            <dd className="security-private">
+              <span className="mono">
+                {data.securityKey
+                  ? keyVisible
+                    ? data.securityKey
+                    : "••••••"
+                  : "Not generated"}
+              </span>
+              {data.securityKey && (
+                <button
+                  onClick={() => setKeyVisible((x) => !x)}
+                  aria-label={
+                    keyVisible ? "Hide security key" : "Reveal security key"
+                  }
+                >
+                  <Icon name={keyVisible ? "EyeOff" : "Eye"} />
+                  {keyVisible ? "Hide" : "Reveal"}
+                </button>
+              )}
+            </dd>
           </div>
         </dl>
       </div>
-      <button className="transaction-add" onClick={add} disabled={alreadyAdded}>
-        <Icon name={alreadyAdded ? "CircleCheck" : "PlusCircle"} />
-        {alreadyAdded ? "Added to transactions" : "Add to my transactions"}
+      <button
+        className={`transaction-add ${existingRecord ? "exists" : ""}`}
+        onClick={add}
+      >
+        <Icon name={existingRecord ? "CircleCheck" : "PlusCircle"} />
+        {existingRecord ? "Already in transactions" : "Add to my transactions"}
       </button>
     </article>
   );
@@ -4102,6 +4136,7 @@ async function decryptBackup(text, password) {
 }
 function BackupPanel({ db, save, user, setToast }) {
   const [password, setPassword] = useState("");
+  const [passwordHint, setPasswordHint] = useState("");
   const [busy, setBusy] = useState(false);
   const fileRef = useRef(null);
   const userBackup = () => ({
@@ -4141,6 +4176,46 @@ function BackupPanel({ db, save, user, setToast }) {
       setToast(share ? "Backup ready to share" : "Encrypted backup downloaded");
     } catch {
       setToast("Backup could not be created");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const storeRecoveryCopy = async () => {
+    if (user.plan !== "Pro")
+      return setToast("Administrator recovery storage is a Pro feature");
+    if (password.length < 8)
+      return setToast("Use a backup password of at least 8 characters");
+    if (
+      !confirm(
+        "Store an encrypted recovery copy with the administrator? The administrator cannot open it without your password.",
+      )
+    )
+      return;
+    setBusy(true);
+    try {
+      const encrypted = await encryptBackup(userBackup(), password);
+      const item = {
+        id: uid("recovery"),
+        owner: user.id,
+        userName: user.name,
+        userEmail: user.email,
+        filename: `datachat-recovery-${user.id}-${today()}.dcbackup`,
+        encrypted,
+        passwordHint: passwordHint.trim(),
+        createdAt: new Date().toISOString(),
+        format: "AES-256-GCM",
+        status: "stored",
+      };
+      save((d) => ({
+        ...d,
+        recoveryBackups: [
+          item,
+          ...(d.recoveryBackups || []).filter((x) => x.owner !== user.id),
+        ],
+      }));
+      setToast("Encrypted recovery copy stored in the admin vault");
+    } catch {
+      setToast("Recovery copy could not be stored");
     } finally {
       setBusy(false);
     }
@@ -4220,6 +4295,21 @@ function BackupPanel({ db, save, user, setToast }) {
           opened.
         </small>
       </label>
+      {user.plan === "Pro" && (
+        <label>
+          Password hint for recovery (optional)
+          <input
+            value={passwordHint}
+            onChange={(e) => setPasswordHint(e.target.value)}
+            maxLength="80"
+            placeholder="A hint only—not the password"
+          />
+          <small>
+            The administrator can see this hint but never receives your
+            password.
+          </small>
+        </label>
+      )}
       <div className="backup-actions">
         <button
           className="secondary"
@@ -4245,6 +4335,16 @@ function BackupPanel({ db, save, user, setToast }) {
           <Icon name="History" />
           Restore backup
         </button>
+        {user.plan === "Pro" && (
+          <button
+            className="primary"
+            disabled={busy}
+            onClick={storeRecoveryCopy}
+          >
+            <Icon name="Vault" />
+            Store with admin
+          </button>
+        )}
         <input
           ref={fileRef}
           hidden
@@ -4260,6 +4360,19 @@ function BackupPanel({ db, save, user, setToast }) {
           offers, and reports. AES-256-GCM encrypted on this device.
         </span>
       </div>
+      {user.plan === "Pro" && (
+        <div className="vault-status">
+          <Icon name="ShieldCheck" />
+          <span>
+            <b>Pro recovery vault</b>
+            <small>
+              {(db.recoveryBackups || []).some((x) => x.owner === user.id)
+                ? `Encrypted copy stored ${new Date((db.recoveryBackups || []).find((x) => x.owner === user.id).createdAt).toLocaleDateString()}`
+                : "No administrator recovery copy stored yet"}
+            </small>
+          </span>
+        </div>
+      )}
     </section>
   );
 }
