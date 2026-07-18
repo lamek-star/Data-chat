@@ -15,6 +15,48 @@ import {
 } from "recharts";
 
 const K = "datachat-v1";
+const communityMembers = [
+  {
+    id: "p1",
+    name: "Semhar Tesfay",
+    handle: "@semhar.t",
+    country: "Eritrea",
+    city: "Asmara",
+    color: "#8f69d8",
+    verified: true,
+    bio: "Community member · Tigrinya, English",
+  },
+  {
+    id: "p2",
+    name: "Dawit Abraham",
+    handle: "@dawit.a",
+    country: "Germany",
+    city: "Frankfurt",
+    color: "#35a57a",
+    verified: true,
+    bio: "Verified transfer partner · Tigrinya, German",
+  },
+  {
+    id: "p3",
+    name: "Rahel Berhane",
+    handle: "@rahel.b",
+    country: "Canada",
+    city: "Toronto",
+    color: "#d7a62b",
+    verified: false,
+    bio: "New community member · Tigrinya, English",
+  },
+  {
+    id: "p4",
+    name: "Yonas Mengisteab",
+    handle: "@yonas.m",
+    country: "UAE",
+    city: "Dubai",
+    color: "#4c8ed9",
+    verified: true,
+    bio: "Business member · Arabic, Tigrinya, English",
+  },
+];
 const seed = {
   users: [
     {
@@ -164,7 +206,8 @@ function App() {
       JSON.parse(sessionStorage.getItem("dc-user") || "null"),
     ),
     [page, setPage] = useState("home"),
-    [toast, setToast] = useState("");
+    [toast, setToast] = useState(""),
+    [onboarding, setOnboarding] = useState(false);
   useEffect(() => localStorage.setItem(K, JSON.stringify(db)), [db]);
   useEffect(() => {
     if (toast) {
@@ -176,6 +219,7 @@ function App() {
   const login = (u) => {
     setUser(u);
     sessionStorage.setItem("dc-user", JSON.stringify(u));
+    if (!localStorage.getItem(`dc-onboarded-${u.id}`)) setOnboarding(true);
   };
   if (!user) return <Auth db={db} save={save} login={login} />;
   const props = { db, save, user, setToast };
@@ -184,6 +228,7 @@ function App() {
       <Sidebar page={page} setPage={setPage} user={user} />
       <main>
         {page === "home" && <Home {...props} setPage={setPage} />}{" "}
+        {page === "portal" && <Portal {...props} setPage={setPage} />}{" "}
         {page === "records" && <Records {...props} />}{" "}
         {page === "reports" && <Reports {...props} />}{" "}
         {page === "settings" && (
@@ -203,10 +248,19 @@ function App() {
           {toast}
         </div>
       )}
+      {onboarding && (
+        <Onboarding
+          user={user}
+          close={() => {
+            localStorage.setItem(`dc-onboarded-${user.id}`, "true");
+            setOnboarding(false);
+          }}
+        />
+      )}
     </div>
   );
 }
-function Auth({ db, save, login }) {
+function LegacyAuth({ db, save, login }) {
   const [mode, setMode] = useState("login"),
     [err, setErr] = useState("");
   const submit = (e) => {
@@ -325,8 +379,267 @@ function Auth({ db, save, login }) {
     </div>
   );
 }
+function Auth({ db, save, login }) {
+  const [mode, setMode] = useState("login");
+  const [err, setErr] = useState("");
+  const [slide, setSlide] = useState(0);
+  const slides = [
+    {
+      image: "/assets/welcome-community.png",
+      eyebrow: "CONNECTED COMMUNITY",
+      title: "Talk, transfer and stay close.",
+      text: "Find trusted people, chat privately, and keep every financial conversation connected to a clear record.",
+      icon: "MessagesSquare",
+    },
+    {
+      image: "/assets/welcome-verify.png",
+      eyebrow: "SAFE CASH HANDOFF",
+      title: "Verify the right receiver.",
+      text: "Receiver-bound QR and text codes reduce mistakes before cash is released.",
+      icon: "ScanQrCode",
+    },
+    {
+      image: "/assets/datachat-transfer-ad.png",
+      eyebrow: "CLEAR FINANCIAL RECORDS",
+      title: "One place for every transfer.",
+      text: "Create transactions, approve pending orders, import or export CSV files, and understand your activity.",
+      icon: "ChartNoAxesCombined",
+    },
+  ];
+  useEffect(() => {
+    const timer = setInterval(
+      () => setSlide((s) => (s + 1) % slides.length),
+      6500,
+    );
+    return () => clearInterval(timer);
+  }, []);
+  const submit = (e) => {
+    e.preventDefault();
+    const f = new FormData(e.currentTarget);
+    const email = f.get("email").trim().toLowerCase();
+    const password = f.get("password");
+    if (mode === "login") {
+      const u = db.users.find(
+        (x) => x.email === email && x.password === password,
+      );
+      if (!u) return setErr("Email or password is incorrect.");
+      login(u);
+    } else {
+      if (db.users.some((x) => x.email === email))
+        return setErr("An account already exists for this email.");
+      const u = {
+        id: uid("user"),
+        name: f.get("name"),
+        email,
+        password,
+        plan: "Free",
+      };
+      save((d) => ({ ...d, users: [...d.users, u] }));
+      login(u);
+    }
+  };
+  const item = slides[slide];
+  return (
+    <div className="welcome">
+      <section
+        className="welcome-story"
+        style={{
+          backgroundImage: `linear-gradient(90deg,#06101fe8 0%,#06101f88 48%,#06101f12 100%),url(${item.image})`,
+        }}
+      >
+        <div className="welcome-top">
+          <div className="brand">
+            <div className="logo">
+              <Icon name="MessagesSquare" />
+            </div>
+            <b>DataChat</b>
+          </div>
+          <span>
+            <Icon name="ShieldCheck" />
+            Private financial community
+          </span>
+        </div>
+        <div className="welcome-copy" key={slide}>
+          <span className="story-icon">
+            <Icon name={item.icon} size={24} />
+          </span>
+          <p className="eyebrow">{item.eyebrow}</p>
+          <h1>{item.title}</h1>
+          <p>{item.text}</p>
+          <div className="story-dots" aria-label="Welcome slides">
+            {slides.map((x, i) => (
+              <button
+                key={x.title}
+                aria-label={`Show slide ${i + 1}`}
+                className={i === slide ? "on" : ""}
+                onClick={() => setSlide(i)}
+              />
+            ))}
+          </div>
+        </div>
+        <div className="welcome-proof">
+          <span>
+            <b>Private</b>
+            <small>User-isolated records</small>
+          </span>
+          <span>
+            <b>Safer</b>
+            <small>Report and block controls</small>
+          </span>
+          <span>
+            <b>Portable</b>
+            <small>CSV import and export</small>
+          </span>
+        </div>
+      </section>
+      <section className="welcome-access">
+        <form className="auth-card" onSubmit={submit}>
+          <p className="eyebrow">
+            {mode === "login" ? "WELCOME BACK" : "JOIN DATACHAT"}
+          </p>
+          <h2>
+            {mode === "login"
+              ? "Sign in to your workspace"
+              : "Create your private workspace"}
+          </h2>
+          <p>
+            {mode === "login"
+              ? "Continue your conversations and financial records."
+              : "New accounts begin with completely separate data and a short guided tour."}
+          </p>
+          {mode === "register" && (
+            <label>
+              Full name
+              <input name="name" required placeholder="Your full name" />
+            </label>
+          )}
+          <label>
+            Email address
+            <input
+              name="email"
+              type="email"
+              required
+              defaultValue={mode === "login" ? "demo@datachat.app" : ""}
+              placeholder="you@example.com"
+            />
+          </label>
+          <label>
+            Password
+            <input
+              name="password"
+              type="password"
+              required
+              minLength="6"
+              defaultValue={mode === "login" ? "demo123" : ""}
+              placeholder="At least 6 characters"
+            />
+          </label>
+          {err && <div className="error">{err}</div>}
+          <button className="primary" type="submit">
+            {mode === "login" ? "Sign in securely" : "Create account"}
+            <Icon name="ArrowRight" />
+          </button>
+          <button
+            type="button"
+            className="link"
+            onClick={() => {
+              setMode(mode === "login" ? "register" : "login");
+              setErr("");
+            }}
+          >
+            {mode === "login"
+              ? "First time here? Create an account"
+              : "Already have an account? Sign in"}
+          </button>
+          {mode === "login" && (
+            <div className="demo">Demo: demo@datachat.app / demo123</div>
+          )}
+          <small className="auth-legal">
+            <Icon name="LockKeyhole" />
+            By continuing, you agree to use DataChat lawfully and protect other
+            members' privacy.
+          </small>
+        </form>
+      </section>
+    </div>
+  );
+}
+function Onboarding({ user, close }) {
+  const [step, setStep] = useState(0);
+  const steps = [
+    {
+      icon: "Sparkles",
+      title: `Welcome, ${user.name.split(" ")[0]}`,
+      text: "This is your private DataChat workspace. Your contacts, messages, and records are separated from every other account.",
+    },
+    {
+      icon: "MessagesSquare",
+      title: "Connect with people",
+      text: "Use the Community portal to discover members, add a trusted contact, and begin a conversation.",
+    },
+    {
+      icon: "ShieldCheck",
+      title: "Verify before cash release",
+      text: "Generate a receiver-bound claim code for each transfer. Validate the complete QR or text code—not only the six digits.",
+    },
+    {
+      icon: "Flag",
+      title: "Keep the community safe",
+      text: "Every chat includes report and block controls. Reports save the reason and recent conversation context for review.",
+    },
+  ];
+  const item = steps[step];
+  return (
+    <div className="scrim onboarding-scrim">
+      <section className="onboarding" role="dialog" aria-modal="true">
+        <button className="skip" onClick={close}>
+          Skip tour
+        </button>
+        <div className="onboard-visual">
+          <div className="onboard-rings">
+            <span>
+              <Icon name={item.icon} size={42} />
+            </span>
+          </div>
+        </div>
+        <div className="onboard-copy">
+          <p className="eyebrow">
+            GETTING STARTED · {step + 1} OF {steps.length}
+          </p>
+          <h2>{item.title}</h2>
+          <p>{item.text}</p>
+          <div className="onboard-dots">
+            {steps.map((x, i) => (
+              <i key={x.title} className={i === step ? "on" : ""} />
+            ))}
+          </div>
+          <div className="onboard-actions">
+            <button
+              className="secondary"
+              disabled={step === 0}
+              onClick={() => setStep(step - 1)}
+            >
+              <Icon name="ArrowLeft" />
+              Back
+            </button>
+            <button
+              className="primary"
+              onClick={() =>
+                step === steps.length - 1 ? close() : setStep(step + 1)
+              }
+            >
+              {step === steps.length - 1 ? "Open DataChat" : "Continue"}
+              <Icon name={step === steps.length - 1 ? "Check" : "ArrowRight"} />
+            </button>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
 const nav = [
   ["home", "MessagesSquare", "Messages"],
+  ["portal", "UsersRound", "Community"],
   ["records", "TableProperties", "Transactions"],
   ["reports", "ChartNoAxesCombined", "Reports"],
   ["settings", "Settings", "Settings"],
@@ -394,17 +707,174 @@ function Header({ title, sub, actions }) {
     </header>
   );
 }
+function Portal({ db, save, user, setToast, setPage }) {
+  const [search, setSearch] = useState("");
+  const [country, setCountry] = useState("All");
+  const contacts = db.contacts.filter((x) => x.owner === user.id);
+  const addPerson = (person) => {
+    if (contacts.some((x) => x.portalId === person.id)) {
+      setPage("home");
+      setToast("Contact is already in your messages");
+      return;
+    }
+    save((d) => ({
+      ...d,
+      contacts: [
+        ...d.contacts,
+        {
+          id: uid("c"),
+          portalId: person.id,
+          owner: user.id,
+          name: person.name,
+          phone: person.handle,
+          country: person.country,
+          color: person.color,
+          isOnline: true,
+        },
+      ],
+    }));
+    setToast(`${person.name} added to your trusted contacts`);
+    setPage("home");
+  };
+  const countriesInPortal = [
+    "All",
+    ...new Set(communityMembers.map((x) => x.country)),
+  ];
+  const visible = communityMembers.filter(
+    (x) =>
+      (x.name + x.handle + x.city)
+        .toLowerCase()
+        .includes(search.toLowerCase()) &&
+      (country === "All" || x.country === country),
+  );
+  return (
+    <div className="page portal-page">
+      <section className="portal-hero">
+        <div>
+          <span className="eyebrow">DATACHAT COMMUNITY</span>
+          <h1>
+            Find people. Build trust.
+            <br />
+            <span>Chat with confidence.</span>
+          </h1>
+          <p>
+            Discover community members by name or location, add people you know,
+            and use built-in safety controls in every conversation.
+          </p>
+          <div className="portal-trust">
+            <span>
+              <Icon name="BadgeCheck" />
+              Verified profiles
+            </span>
+            <span>
+              <Icon name="ShieldAlert" />
+              Report & block controls
+            </span>
+            <span>
+              <Icon name="LockKeyhole" />
+              Private contact lists
+            </span>
+          </div>
+        </div>
+        <div className="portal-orbit">
+          <div className="orbit-center">
+            <Icon name="UsersRound" size={30} />
+          </div>
+          {communityMembers.map((x, i) => (
+            <div
+              key={x.id}
+              className={`orbit-user orbit-${i + 1}`}
+              style={{ background: x.color }}
+            >
+              {x.name
+                .split(" ")
+                .map((n) => n[0])
+                .join("")}
+            </div>
+          ))}
+        </div>
+      </section>
+      <div className="portal-toolbar">
+        <div className="search">
+          <Icon name="Search" />
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search people, username or city"
+          />
+        </div>
+        <select
+          value={country}
+          onChange={(e) => setCountry(e.target.value)}
+          aria-label="Filter community by country"
+        >
+          {countriesInPortal.map((x) => (
+            <option key={x}>{x}</option>
+          ))}
+        </select>
+      </div>
+      <div className="member-grid">
+        {visible.map((person) => (
+          <article className="member-card" key={person.id}>
+            <div className="member-cover">
+              <span className="online-label">
+                <i />
+                Online
+              </span>
+            </div>
+            <div className="member-avatar" style={{ background: person.color }}>
+              {person.name
+                .split(" ")
+                .map((x) => x[0])
+                .join("")}
+            </div>
+            <div className="member-info">
+              <h3>
+                {person.name}
+                {person.verified && <Icon name="BadgeCheck" size={17} />}
+              </h3>
+              <span>
+                {person.handle} · {person.city}, {person.country}
+              </span>
+              <p>{person.bio}</p>
+              <button className="primary" onClick={() => addPerson(person)}>
+                <Icon name="MessageCircle" />
+                {contacts.some((x) => x.portalId === person.id)
+                  ? "Open chat"
+                  : "Connect & chat"}
+              </button>
+            </div>
+          </article>
+        ))}
+      </div>
+      <div className="portal-notice">
+        <Icon name="Info" />
+        <div>
+          <b>Internet portal foundation</b>
+          <p>
+            This edition demonstrates discovery, connection, reporting, and
+            blocking locally. Publishing live accounts and realtime messages
+            between different devices requires the production backend described
+            in the project README.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
 function Home({ db, save, user, setToast, setPage }) {
   const contacts = db.contacts.filter((x) => x.owner === user.id),
     [selected, setSelected] = useState(contacts[0]?.id),
     [search, setSearch] = useState(""),
-    [add, setAdd] = useState(false);
+    [add, setAdd] = useState(false),
+    [report, setReport] = useState(null);
   const c = contacts.find((x) => x.id === selected),
     msgs = db.messages.filter(
       (x) => x.owner === user.id && x.contact === selected,
     );
   const send = (e) => {
     e.preventDefault();
+    if (c?.blocked) return setToast("This member is blocked");
     const inp = e.currentTarget.elements.message;
     if (!inp.value.trim()) return;
     save((d) => ({
@@ -445,7 +915,10 @@ function Home({ db, save, user, setToast, setPage }) {
           }
         />
         <div className="ad">
-          <img src="/assets/datachat-transfer-ad.png" alt="Secure international transfer confirmation" />
+          <img
+            src="/assets/datachat-transfer-ad.png"
+            alt="Secure international transfer confirmation"
+          />
           <div>
             <span>SECURE CASH HANDOFF</span>
             <b>Verify the right receiver.</b>
@@ -516,6 +989,14 @@ function Home({ db, save, user, setToast, setPage }) {
                 </small>
               </div>
               <ContactQr c={c} setToast={setToast} />
+              <button
+                className="icon-btn"
+                title="Report or block user"
+                aria-label="Report or block user"
+                onClick={() => setReport(c)}
+              >
+                <Icon name="ShieldAlert" />
+              </button>
             </div>
             <div className="messages">
               {msgs.map((m) => (
@@ -532,9 +1013,10 @@ function Home({ db, save, user, setToast, setPage }) {
               <input
                 name="message"
                 aria-label="Message"
+                disabled={c.blocked}
                 placeholder="Write a secure message…"
               />
-              <button className="send" aria-label="Send">
+              <button className="send" aria-label="Send" disabled={c.blocked}>
                 <Icon name="Send" />
               </button>
             </form>
@@ -555,7 +1037,127 @@ function Home({ db, save, user, setToast, setPage }) {
           setToast={setToast}
         />
       )}
+      {report && (
+        <ReportUser
+          contact={report}
+          messages={msgs}
+          user={user}
+          save={save}
+          setToast={setToast}
+          close={() => setReport(null)}
+        />
+      )}
     </div>
+  );
+}
+function ReportUser({ contact, messages, user, save, setToast, close }) {
+  const [submitted, setSubmitted] = useState(false);
+  const submit = (e) => {
+    e.preventDefault();
+    const f = new FormData(e.currentTarget);
+    const report = {
+      id: uid("report"),
+      reporterId: user.id,
+      contactId: contact.id,
+      contactName: contact.name,
+      reason: f.get("reason"),
+      details: f.get("details"),
+      includeMessages: f.get("evidence") === "on",
+      evidence: f.get("evidence") === "on" ? messages.slice(-10) : [],
+      createdAt: new Date().toISOString(),
+      status: "Submitted",
+    };
+    save((d) => ({
+      ...d,
+      reports: [...(d.reports || []), report],
+      contacts:
+        f.get("block") === "on"
+          ? d.contacts.map((x) =>
+              x.id === contact.id ? { ...x, blocked: true } : x,
+            )
+          : d.contacts,
+    }));
+    setSubmitted(true);
+    setToast("Safety report submitted");
+  };
+  return (
+    <Modal title="Report or block member" close={close}>
+      {submitted ? (
+        <div className="report-success">
+          <span>
+            <Icon name="ShieldCheck" size={30} />
+          </span>
+          <h3>Report received</h3>
+          <p>
+            Your report about {contact.name} was saved for safety review. If you
+            feel in immediate danger, contact local emergency services.
+          </p>
+          <button className="primary" onClick={close}>
+            Done
+          </button>
+        </div>
+      ) : (
+        <form className="form report-form" onSubmit={submit}>
+          <div className="report-person">
+            <div className="avatar" style={{ background: contact.color }}>
+              {contact.name[0]}
+            </div>
+            <div>
+              <b>{contact.name}</b>
+              <small>
+                {contact.phone} · {contact.country}
+              </small>
+            </div>
+          </div>
+          <label>
+            Why are you reporting this member?
+            <select name="reason" required defaultValue="">
+              <option value="" disabled>
+                Select a reason
+              </option>
+              <option>Scam or fraud attempt</option>
+              <option>Harassment or threats</option>
+              <option>False identity</option>
+              <option>Suspicious transaction request</option>
+              <option>Spam</option>
+              <option>Other safety concern</option>
+            </select>
+          </label>
+          <label>
+            Tell us what happened
+            <textarea
+              name="details"
+              required
+              minLength="10"
+              placeholder="Describe the behavior and when it happened."
+            />
+          </label>
+          <label className="check-row">
+            <input type="checkbox" name="evidence" defaultChecked />
+            <span>
+              <b>Include recent messages</b>
+              <small>Attach the last 10 messages as evidence.</small>
+            </span>
+          </label>
+          <label className="check-row danger-row">
+            <input type="checkbox" name="block" />
+            <span>
+              <b>Block {contact.name}</b>
+              <small>Prevent new messages in this local workspace.</small>
+            </span>
+          </label>
+          <div className="modal-actions">
+            <button type="button" className="secondary" onClick={close}>
+              Cancel
+            </button>
+            <button className="primary danger-submit">
+              <Icon name="Flag" />
+              Submit report
+            </button>
+          </div>
+        </form>
+      )}
+    </Modal>
   );
 }
 function ContactQr({ c, setToast }) {
@@ -891,13 +1493,13 @@ function Records({ db, save, user, setToast }) {
                   </tr>
                 )}
                 {items.map((r) => (
-                    <RecordRow
-                      key={r.id}
-                      r={r}
-                      edit={() => setEdit(r)}
-                      del={() => del(r.id)}
-                      update={update}
-                      handoff={() => setHandoff(r)}
+                  <RecordRow
+                    key={r.id}
+                    r={r}
+                    edit={() => setEdit(r)}
+                    del={() => del(r.id)}
+                    update={update}
+                    handoff={() => setHandoff(r)}
                   />
                 ))}
               </React.Fragment>
@@ -1028,7 +1630,9 @@ function RecordRow({ r, edit, del, update, handoff }) {
           {r.key || "Generate"}
         </button>
         <button className="handoff-link" onClick={handoff}>
-          {r.handoffStatus === "Cash released" ? "Cash released" : "Cash handoff"}
+          {r.handoffStatus === "Cash released"
+            ? "Cash released"
+            : "Cash handoff"}
         </button>
       </td>
       <td>
@@ -1066,8 +1670,13 @@ function RecordModal({ record, user, save, close, setToast }) {
           rate: +f.rate,
           id: record.id || "TXN-" + Math.floor(1000 + Math.random() * 9000),
           owner: user.id,
-      tag: f.status === "Pending" ? "Pending review" : f.tag,
-      key: record.key || f.key || String(crypto.getRandomValues(new Uint32Array(1))[0] % 1000000).padStart(6, "0"),
+          tag: f.status === "Pending" ? "Pending review" : f.tag,
+          key:
+            record.key ||
+            f.key ||
+            String(
+              crypto.getRandomValues(new Uint32Array(1))[0] % 1000000,
+            ).padStart(6, "0"),
         };
       save((d) => ({
         ...d,
@@ -1243,18 +1852,26 @@ function HandoffModal({ record, close, confirm, setToast }) {
     .replace(/[^a-z0-9]/gi, "")
     .toUpperCase()
     .slice(0, 10);
-  const transferId = String(record.id).replace(/[^a-z0-9]/gi, "").toUpperCase();
+  const transferId = String(record.id)
+    .replace(/[^a-z0-9]/gi, "")
+    .toUpperCase();
   const claimCode = `DC1-${transferId}-${receiverId}-${record.key}`;
   const [qr, setQr] = useState("");
   const [presented, setPresented] = useState("");
   const [error, setError] = useState("");
   const fileRef = useRef(null);
   useEffect(() => {
-    QRCode.toDataURL(claimCode, { margin: 2, width: 260, errorCorrectionLevel: "H" }).then(setQr);
+    QRCode.toDataURL(claimCode, {
+      margin: 2,
+      width: 260,
+      errorCorrectionLevel: "H",
+    }).then(setQr);
   }, [claimCode]);
   const verify = () => {
     if (presented.trim().toUpperCase() !== claimCode) {
-      setError("Code does not match this transfer and receiver. Do not release cash.");
+      setError(
+        "Code does not match this transfer and receiver. Do not release cash.",
+      );
       return;
     }
     confirm();
@@ -1293,26 +1910,78 @@ function HandoffModal({ record, close, confirm, setToast }) {
         <section className="claim-card">
           <span className="eyebrow">RECEIVER CLAIM</span>
           <h3>{record.receiver}</h3>
-          <p>{record.id} · {money(record.amount, record.currency)}</p>
-          {qr && <img src={qr} alt={`Cash handoff QR code for ${record.receiver}`} />}
+          <p>
+            {record.id} · {money(record.amount, record.currency)}
+          </p>
+          {qr && (
+            <img src={qr} alt={`Cash handoff QR code for ${record.receiver}`} />
+          )}
           <code>{claimCode}</code>
           <div className="claim-actions">
-            <button className="secondary" onClick={() => { navigator.clipboard?.writeText(claimCode); setToast("Receiver claim code copied"); }}><Icon name="Copy" />Copy text</button>
-            <button className="secondary" onClick={download}><Icon name="FileDown" />Download .txt</button>
+            <button
+              className="secondary"
+              onClick={() => {
+                navigator.clipboard?.writeText(claimCode);
+                setToast("Receiver claim code copied");
+              }}
+            >
+              <Icon name="Copy" />
+              Copy text
+            </button>
+            <button className="secondary" onClick={download}>
+              <Icon name="FileDown" />
+              Download .txt
+            </button>
           </div>
-          <small>Give this QR or text code only to {record.receiver}. The six-digit secret remains bound to their name and this transfer.</small>
+          <small>
+            Give this QR or text code only to {record.receiver}. The six-digit
+            secret remains bound to their name and this transfer.
+          </small>
         </section>
         <section className="verify-card">
           <span className="eyebrow">CASH AGENT CHECK</span>
           <h3>Verify before releasing cash</h3>
-          <p>Ask the receiver to present their complete DataChat claim code. The receiver name and transfer reference must match.</p>
-          <label>Presented text code<textarea value={presented} onChange={(e) => { setPresented(e.target.value); setError(""); }} placeholder={claimCode} /></label>
+          <p>
+            Ask the receiver to present their complete DataChat claim code. The
+            receiver name and transfer reference must match.
+          </p>
+          <label>
+            Presented text code
+            <textarea
+              value={presented}
+              onChange={(e) => {
+                setPresented(e.target.value);
+                setError("");
+              }}
+              placeholder={claimCode}
+            />
+          </label>
           <div id="qr-file-reader" className="qr-reader" />
-          <input ref={fileRef} hidden type="file" accept="image/*" capture="environment" onChange={(e) => scanFile(e.target.files?.[0])} />
-          <button className="secondary full-btn" onClick={() => fileRef.current?.click()}><Icon name="ScanQrCode" />Scan or photograph QR</button>
+          <input
+            ref={fileRef}
+            hidden
+            type="file"
+            accept="image/*"
+            capture="environment"
+            onChange={(e) => scanFile(e.target.files?.[0])}
+          />
+          <button
+            className="secondary full-btn"
+            onClick={() => fileRef.current?.click()}
+          >
+            <Icon name="ScanQrCode" />
+            Scan or photograph QR
+          </button>
           {error && <div className="error">{error}</div>}
-          <button className="primary full-btn" onClick={verify}><Icon name="ShieldCheck" />Validate and release cash</button>
-          <small className="warning"><Icon name="TriangleAlert" />Never release cash from a screenshot or six-digit number alone; validate the complete receiver-bound code.</small>
+          <button className="primary full-btn" onClick={verify}>
+            <Icon name="ShieldCheck" />
+            Validate and release cash
+          </button>
+          <small className="warning">
+            <Icon name="TriangleAlert" />
+            Never release cash from a screenshot or six-digit number alone;
+            validate the complete receiver-bound code.
+          </small>
         </section>
       </div>
     </Modal>
