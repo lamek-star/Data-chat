@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">DataChat</string>
+    <string name="title_activity_main">DataChat</string>
+    <string name="package_name">com.lamekstar.datachat</string>
+    <string name="custom_url_scheme">com.lamekstar.datachat</string>
+</resources>
