@@ -219,6 +219,16 @@ const money = (n, c = "USD") =>
 const today = () => new Date().toISOString().slice(0, 10);
 const uid = (p = "id") =>
   p + "-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+const downloadText = (filename, content) => {
+  const url = URL.createObjectURL(
+    new Blob([content], { type: "text/plain;charset=utf-8" }),
+  );
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename.replaceAll(/[^a-z0-9._-]/gi, "-");
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+};
 const countries = [
   "UAE",
   "Ethiopia",
@@ -241,11 +251,7 @@ function App() {
     [user, setUser] = useState(() =>
       JSON.parse(sessionStorage.getItem("dc-user") || "null"),
     ),
-    [page, setPage] = useState(() =>
-      JSON.parse(sessionStorage.getItem("dc-user") || "null")?.role === "admin"
-        ? "admin"
-        : "home",
-    ),
+    [page, setPage] = useState("home"),
     [toast, setToast] = useState(""),
     [onboarding, setOnboarding] = useState(false);
   useEffect(() => localStorage.setItem(K, JSON.stringify(db)), [db]);
@@ -259,7 +265,7 @@ function App() {
   const login = (u) => {
     if (u.status === "suspended" || u.status === "pending") return;
     setUser(u);
-    if (u.role === "admin") setPage("admin");
+    if (u.role === "admin") return;
     sessionStorage.setItem("dc-user", JSON.stringify(u));
     if (u.role !== "admin" && !localStorage.getItem(`dc-onboarded-${u.id}`))
       setOnboarding(true);
@@ -270,20 +276,23 @@ function App() {
     <div className="app">
       <Sidebar page={page} setPage={setPage} user={user} />
       <main>
-        {user.role !== "admin" && page === "home" && (
-          <Home {...props} setPage={setPage} />
-        )}{" "}
-        {user.role !== "admin" && page === "portal" && (
-          <Portal {...props} setPage={setPage} />
-        )}{" "}
-        {user.role !== "admin" && page === "rates" && (
+        {page === "home" && <Home {...props} setPage={setPage} />}{" "}
+        {page === "portal" && <Portal {...props} setPage={setPage} />}{" "}
+        {page === "rates" && user.plan === "Pro" && (
           <RatesMarketplace {...props} setPage={setPage} />
         )}{" "}
-        {page === "admin" && user.role === "admin" && (
-          <AdminConsole {...props} />
+        {page === "records" && <Records {...props} />}{" "}
+        {page === "reports" && user.plan === "Pro" && <Reports {...props} />}{" "}
+        {(page === "rates" || page === "reports") && user.plan !== "Pro" && (
+          <PremiumGate
+            feature={
+              page === "rates"
+                ? "Live rates and marketplace"
+                : "Financial reports"
+            }
+            setPage={setPage}
+          />
         )}
-        {user.role !== "admin" && page === "records" && <Records {...props} />}{" "}
-        {user.role !== "admin" && page === "reports" && <Reports {...props} />}{" "}
         {page === "settings" && (
           <Settings
             {...props}
@@ -326,6 +335,10 @@ function LegacyAuth({ db, save, login }) {
         (x) => x.email === email && x.password === password,
       );
       if (!u) return setErr("Email or password is incorrect.");
+      if (u.role === "admin")
+        return setErr(
+          "Administrator accounts must use the separate admin portal.",
+        );
       login(u);
     } else {
       if (db.users.some((x) => x.email === email))
@@ -661,11 +674,7 @@ function Auth({ db, save, login }) {
               : "Already have an account? Sign in"}
           </button>
           {mode === "login" && (
-            <div className="demo">
-              User: demo@datachat.app / demo123
-              <br />
-              Admin: admin@datachat.app / admin123
-            </div>
+            <div className="demo">Demo: demo@datachat.app / demo123</div>
           )}
           {mode === "register" && db.adminConfig?.paymentUrl && (
             <a
@@ -903,6 +912,27 @@ function Header({ title, sub, actions }) {
     </header>
   );
 }
+function PremiumGate({ feature, setPage }) {
+  return (
+    <div className="page">
+      <section className="panel premium-gate">
+        <span>
+          <Icon name="Crown" size={30} />
+        </span>
+        <p className="eyebrow">PRO FEATURE</p>
+        <h1>{feature}</h1>
+        <p>
+          This area is reserved for Pro workspaces. Redeem a Pro access code or
+          contact the administrator to upgrade.
+        </p>
+        <button className="primary" onClick={() => setPage("settings")}>
+          <Icon name="ArrowRight" />
+          Open account settings
+        </button>
+      </section>
+    </div>
+  );
+}
 const sampleOffers = [
   {
     id: "offer-1",
@@ -955,12 +985,94 @@ const sampleOffers = [
 ];
 function RatesMarketplace({ db, save, user, setToast, setPage }) {
   const [base, setBase] = useState("USD");
+  const [market, setMarket] = useState("UAE");
+  const [assets, setAssets] = useState({
+    metals: [],
+    crypto: [],
+    loading: true,
+    error: "",
+  });
   const [live, setLive] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [add, setAdd] = useState(false);
   const [search, setSearch] = useState("");
   const [refresh, setRefresh] = useState(0);
+  const marketOptions = {
+    UAE: { currency: "AED", label: "Dubai / UAE" },
+    USA: { currency: "USD", label: "United States" },
+    UK: { currency: "GBP", label: "United Kingdom" },
+    Europe: { currency: "EUR", label: "Europe" },
+    India: { currency: "INR", label: "India" },
+  };
+  useEffect(() => {
+    const currency = marketOptions[market].currency.toLowerCase();
+    const controller = new AbortController();
+    setAssets((x) => ({ ...x, loading: true, error: "" }));
+    Promise.allSettled([
+      fetch("https://api.gold-api.com/price/XAU", {
+        signal: controller.signal,
+      }).then((r) => (r.ok ? r.json() : Promise.reject())),
+      fetch("https://api.gold-api.com/price/XAG", {
+        signal: controller.signal,
+      }).then((r) => (r.ok ? r.json() : Promise.reject())),
+      fetch(
+        `https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,solana,tether&vs_currencies=${currency}&include_24hr_change=true`,
+        { signal: controller.signal },
+      ).then((r) => (r.ok ? r.json() : Promise.reject())),
+      currency === "usd"
+        ? Promise.resolve({ rates: { USD: 1 } })
+        : fetch(
+            `https://api.frankfurter.dev/v1/latest?base=USD&symbols=${currency.toUpperCase()}`,
+            { signal: controller.signal },
+          ).then((r) => r.json()),
+    ]).then(([gold, silver, crypto, fx]) => {
+      const conversion =
+        fx.status === "fulfilled"
+          ? fx.value.rates?.[currency.toUpperCase()] || 1
+          : 1;
+      const metalRows = [
+        ["Gold", "XAU", gold],
+        ["Silver", "XAG", silver],
+      ].flatMap(([name, symbol, result]) =>
+        result.status === "fulfilled"
+          ? [
+              {
+                name,
+                symbol,
+                value: Number(result.value.price) * conversion,
+                unit: "troy oz",
+              },
+            ]
+          : [],
+      );
+      const names = {
+        bitcoin: ["Bitcoin", "BTC"],
+        ethereum: ["Ethereum", "ETH"],
+        solana: ["Solana", "SOL"],
+        tether: ["Tether", "USDT"],
+      };
+      const cryptoRows =
+        crypto.status === "fulfilled"
+          ? Object.entries(crypto.value).map(([id, quote]) => ({
+              name: names[id][0],
+              symbol: names[id][1],
+              value: quote[currency],
+              change: quote[`${currency}_24h_change`],
+            }))
+          : [];
+      setAssets({
+        metals: metalRows,
+        crypto: cryptoRows,
+        loading: false,
+        error:
+          !metalRows.length || !cryptoRows.length
+            ? "One market source is temporarily unavailable; available quotes are shown."
+            : "",
+      });
+    });
+    return () => controller.abort();
+  }, [market, refresh]);
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true);
@@ -1096,6 +1208,97 @@ function RatesMarketplace({ db, save, user, setToast, setPage }) {
           {loading ? "Updating" : "Latest published"}
         </span>
       </div>
+      <section className="asset-market panel">
+        <div className="asset-market-head">
+          <div>
+            <span className="eyebrow">METALS & CRYPTO</span>
+            <h2>Global spot reference</h2>
+            <p>
+              Select a market currency. Dubai selection displays global spot
+              converted to AED, not a local jewellery retail quote.
+            </p>
+          </div>
+          <label>
+            Market / country
+            <select value={market} onChange={(e) => setMarket(e.target.value)}>
+              {Object.entries(marketOptions).map(([key, x]) => (
+                <option key={key} value={key}>
+                  {x.label} · {x.currency}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        {assets.error && (
+          <div className="market-notice">
+            <Icon name="CircleAlert" />
+            {assets.error}
+          </div>
+        )}
+        <div className="asset-groups">
+          <div>
+            <h3>
+              <Icon name="Gem" />
+              Precious metals
+            </h3>
+            {assets.loading ? (
+              <div className="rate-skeleton" />
+            ) : (
+              assets.metals.map((x) => (
+                <article className="asset-quote" key={x.symbol}>
+                  <span>
+                    <b>{x.name}</b>
+                    <small>
+                      {x.symbol} · per {x.unit}
+                    </small>
+                  </span>
+                  <strong>
+                    {Number(x.value).toLocaleString(undefined, {
+                      style: "currency",
+                      currency: marketOptions[market].currency,
+                      maximumFractionDigits: 2,
+                    })}
+                  </strong>
+                </article>
+              ))
+            )}
+          </div>
+          <div>
+            <h3>
+              <Icon name="Bitcoin" />
+              Cryptocurrencies
+            </h3>
+            {assets.loading ? (
+              <div className="rate-skeleton" />
+            ) : (
+              assets.crypto.map((x) => (
+                <article className="asset-quote" key={x.symbol}>
+                  <span>
+                    <b>{x.name}</b>
+                    <small>{x.symbol}</small>
+                  </span>
+                  <strong>
+                    {Number(x.value).toLocaleString(undefined, {
+                      style: "currency",
+                      currency: marketOptions[market].currency,
+                      maximumFractionDigits: x.value < 10 ? 4 : 2,
+                    })}
+                    <small
+                      className={(x.change || 0) >= 0 ? "positive" : "negative"}
+                    >
+                      {Number(x.change || 0).toFixed(2)}%
+                    </small>
+                  </strong>
+                </article>
+              ))
+            )}
+          </div>
+        </div>
+        <footer>
+          Sources: Gold API (XAU/XAG), CoinGecko global averages, and
+          Frankfurter currency conversion. Reference only.
+        </footer>
+      </section>
       {error && (
         <div className="error rate-error" role="alert">
           <Icon name="CircleAlert" />
@@ -1810,18 +2013,26 @@ function ReportUser({ contact, messages, user, save, setToast, close }) {
 function ContactQr({ c, setToast }) {
   const [open, setOpen] = useState(false),
     [url, setUrl] = useState("");
+  const payload = JSON.stringify(
+    {
+      version: 1,
+      type: "datachat-contact",
+      contactId: c.id,
+      name: c.name,
+      phone: c.phone,
+      country: c.country,
+    },
+    null,
+    2,
+  );
   useEffect(() => {
     if (open)
-      QRCode.toDataURL(
-        JSON.stringify({
-          type: "datachat-contact",
-          name: c.name,
-          phone: c.phone,
-          country: c.country,
-        }),
-        { margin: 2, width: 220 },
-      ).then(setUrl);
-  }, [open]);
+      QRCode.toDataURL(payload, {
+        margin: 4,
+        width: 320,
+        errorCorrectionLevel: "M",
+      }).then(setUrl);
+  }, [open, payload]);
   return (
     <>
       <button
@@ -1833,20 +2044,39 @@ function ContactQr({ c, setToast }) {
       </button>
       {open && (
         <Modal title="Contact security code" close={() => setOpen(false)}>
-          <div className="qr">
+          <div className="qr share-card">
             {url && <img src={url} alt="Contact QR code" />}
-            <b>{c.name}</b>
-            <p>Scan to add this trusted contact.</p>
-            <button
-              className="secondary"
-              onClick={() => {
-                navigator.clipboard?.writeText(c.phone);
-                setToast("Phone number copied");
-              }}
-            >
-              <Icon name="Copy" />
-              Copy phone
-            </button>
+            <div className="share-summary">
+              <b>{c.name}</b>
+              <span>{c.phone}</span>
+              <small>{c.country}</small>
+            </div>
+            <p>Scan the QR or share the complete text below.</p>
+            <label className="share-text">
+              Contact text
+              <textarea readOnly value={payload} />
+            </label>
+            <div className="share-actions">
+              <button
+                className="secondary"
+                onClick={async () => {
+                  await navigator.clipboard?.writeText(payload);
+                  setToast("Complete contact copied");
+                }}
+              >
+                <Icon name="Copy" />
+                Copy text
+              </button>
+              <button
+                className="secondary"
+                onClick={() =>
+                  downloadText(`datachat-contact-${c.name}.txt`, payload)
+                }
+              >
+                <Icon name="Download" />
+                Download .txt
+              </button>
+            </div>
           </div>
         </Modal>
       )}
@@ -1907,7 +2137,8 @@ function Records({ db, save, user, setToast }) {
     [group, setGroup] = useState(false),
     [edit, setEdit] = useState(null),
     [review, setReview] = useState(false),
-    [handoff, setHandoff] = useState(null);
+    [handoff, setHandoff] = useState(null),
+    [sharing, setSharing] = useState(null);
   const rows = all.filter(
     (r) =>
       (r.id + r.sender + r.receiver + r.account)
@@ -2147,6 +2378,7 @@ function Records({ db, save, user, setToast }) {
                     del={() => del(r.id)}
                     update={update}
                     handoff={() => setHandoff(r)}
+                    share={() => setSharing(r)}
                   />
                 ))}
               </React.Fragment>
@@ -2190,6 +2422,13 @@ function Records({ db, save, user, setToast }) {
             });
             setHandoff(null);
           }}
+          setToast={setToast}
+        />
+      )}
+      {sharing && (
+        <ShareRecordModal
+          record={sharing}
+          close={() => setSharing(null)}
           setToast={setToast}
         />
       )}
@@ -2242,7 +2481,7 @@ function Stat({ icon, label, value, note }) {
     </div>
   );
 }
-function RecordRow({ r, edit, del, update, handoff }) {
+function RecordRow({ r, edit, del, update, handoff, share }) {
   return (
     <tr>
       <td>
@@ -2284,6 +2523,9 @@ function RecordRow({ r, edit, del, update, handoff }) {
       </td>
       <td>
         <div className="row-actions">
+          <button title="Share record" onClick={share}>
+            <Icon name="Share2" />
+          </button>
           {r.tag === "Pending review" && (
             <button
               title="Approve"
@@ -2303,6 +2545,113 @@ function RecordRow({ r, edit, del, update, handoff }) {
         </div>
       </td>
     </tr>
+  );
+}
+function ShareRecordModal({ record, close, setToast }) {
+  const [qr, setQr] = useState("");
+  const data = {
+    version: 1,
+    type: "datachat-transaction-record",
+    reference: record.id,
+    sender: record.sender,
+    senderPhone: record.senderPhone,
+    receiver: record.receiver,
+    receiverPhone: record.receiverPhone,
+    route: `${record.from} to ${record.to}`,
+    amount: record.amount,
+    currency: record.currency,
+    rate: record.rate,
+    date: record.date,
+    status: record.status,
+    securityKey: record.key,
+    note: record.remark || "",
+  };
+  const text = [
+    "DATACHAT TRANSACTION RECORD",
+    `Reference: ${data.reference}`,
+    `Sender: ${data.sender} (${data.senderPhone || "No phone"})`,
+    `Receiver: ${data.receiver} (${data.receiverPhone || "No phone"})`,
+    `Route: ${data.route}`,
+    `Amount: ${data.amount} ${data.currency}`,
+    `Rate: ${data.rate}`,
+    `Date: ${data.date}`,
+    `Status: ${data.status}`,
+    `Security key: ${data.securityKey || "Not generated"}`,
+    `Note: ${data.note || "None"}`,
+  ].join("\n");
+  useEffect(() => {
+    QRCode.toDataURL(JSON.stringify(data), {
+      width: 340,
+      margin: 4,
+      errorCorrectionLevel: "M",
+    }).then(setQr);
+  }, [record.id]);
+  const share = async () => {
+    try {
+      if (navigator.share)
+        await navigator.share({ title: `DataChat ${record.id}`, text });
+      else {
+        await navigator.clipboard.writeText(text);
+        setToast("Record copied because device sharing is unavailable");
+      }
+    } catch (e) {
+      if (e.name !== "AbortError")
+        setToast("Sharing failed; use Copy text or Download instead");
+    }
+  };
+  return (
+    <Modal title="Share transaction record" close={close} wide>
+      <div className="record-share">
+        <div className="qr share-card">
+          {qr && <img src={qr} alt={`QR code for ${record.id}`} />}
+          <div className="share-summary">
+            <b>{record.id}</b>
+            <span>{record.receiver}</span>
+            <small>
+              {record.amount} {record.currency} · {record.status}
+            </small>
+          </div>
+        </div>
+        <div className="share-copy">
+          <div className="premium-note">
+            <Icon name="ShieldCheck" />
+            <div>
+              <b>Confirm before cash release</b>
+              <small>
+                The receiver name and security key are included in both formats.
+              </small>
+            </div>
+          </div>
+          <label className="share-text">
+            Transaction text
+            <textarea readOnly value={text} />
+          </label>
+          <div className="share-actions">
+            <button className="primary" onClick={share}>
+              <Icon name="Share2" />
+              Share
+            </button>
+            <button
+              className="secondary"
+              onClick={async () => {
+                await navigator.clipboard?.writeText(text);
+                setToast("Transaction text copied");
+              }}
+            >
+              <Icon name="Copy" />
+              Copy text
+            </button>
+            <button
+              className="secondary"
+              onClick={() => downloadText(`${record.id}.txt`, text)}
+            >
+              <Icon name="Download" />
+              Download .txt
+            </button>
+          </div>
+        </div>
+      </div>
+    </Modal>
   );
 }
 function RecordModal({ record, user, save, close, setToast }) {

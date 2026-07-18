@@ -1,5 +1,10 @@
 # DataChat
 
+User app: `http://localhost:5173/`  
+Administrator portal: `http://localhost:5173/admin.html`
+
+Rates and financial reports require a Pro account. See `CLOUD_STORAGE_SETUP.md` to connect this project and future apps to one private cloud backend.
+
 Secure financial messaging, international-transfer records, approval workflows and receiver-bound cash handoffs.
 
 ## Run locally
