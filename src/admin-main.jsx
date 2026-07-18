@@ -8,6 +8,9 @@ import {
   Copy,
   Users,
   LockKeyhole,
+  Network,
+  MapPinned,
+  Plus,
 } from "lucide-react";
 import "./styles.css";
 
@@ -112,6 +115,34 @@ function AdminApp() {
     const config = Object.fromEntries(new FormData(e.currentTarget));
     setDb((d) => ({ ...d, adminConfig: config }));
     setToast("Configuration saved");
+  };
+  const createCommunity = (e) => {
+    e.preventDefault();
+    const f = Object.fromEntries(new FormData(e.currentTarget));
+    const parent = (db.communities || []).find((x) => x.id === f.parentId);
+    const community = {
+      id: `community-${Date.now()}`,
+      name: f.name,
+      location: f.location,
+      purpose: f.purpose,
+      parentId: f.parentId || null,
+      level: parent ? (parent.level || 0) + 1 : 0,
+      createdBy: "admin",
+      permissions: {
+        allowSubgroups: f.allowSubgroups === "on",
+        allowInvites: f.allowInvites === "on",
+      },
+      members: [],
+      contactMembers: [],
+      admins: ["admin"],
+      createdAt: new Date().toISOString(),
+    };
+    setDb((d) => ({
+      ...d,
+      communities: [...(d.communities || []), community],
+    }));
+    e.currentTarget.reset();
+    setToast(`${community.name} created`);
   };
   return (
     <div className="admin-shell">
@@ -246,6 +277,103 @@ function AdminApp() {
               Save
             </button>
           </form>
+        </section>
+        <section className="panel admin-community-panel">
+          <div className="panel-title">
+            <div>
+              <h2>
+                <Network /> Community hierarchy
+              </h2>
+              <p>
+                Create location-based parent communities and define delegated
+                authority.
+              </p>
+            </div>
+          </div>
+          <div className="admin-community-layout">
+            <form
+              className="form admin-community-form"
+              onSubmit={createCommunity}
+            >
+              <label>
+                Community name
+                <input name="name" required maxLength="60" />
+              </label>
+              <label>
+                Location
+                <input
+                  name="location"
+                  required
+                  placeholder="Global, country, region or city"
+                />
+              </label>
+              <label>
+                Parent community
+                <select name="parentId">
+                  <option value="">No parent · root level</option>
+                  {(db.communities || []).map((x) => (
+                    <option key={x.id} value={x.id}>
+                      {"—".repeat(x.level || 0)} {x.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Purpose
+                <textarea name="purpose" required minLength="12" />
+              </label>
+              <label className="check-row">
+                <input type="checkbox" name="allowSubgroups" defaultChecked />
+                <span>
+                  <b>Allow delegated subgroups</b>
+                  <small>
+                    Authorized users can create a group below this community.
+                  </small>
+                </span>
+              </label>
+              <label className="check-row">
+                <input type="checkbox" name="allowInvites" defaultChecked />
+                <span>
+                  <b>Allow contact invitations</b>
+                  <small>Group authorities can add trusted contacts.</small>
+                </span>
+              </label>
+              <button className="primary">
+                <Plus />
+                Create community
+              </button>
+            </form>
+            <div className="admin-community-tree">
+              {(db.communities || []).map((x) => {
+                const parent = (db.communities || []).find(
+                  (p) => p.id === x.parentId,
+                );
+                return (
+                  <article
+                    key={x.id}
+                    style={{ "--depth": Math.min(x.level || 0, 3) }}
+                  >
+                    <span>
+                      <MapPinned />
+                    </span>
+                    <div>
+                      <b>{x.name}</b>
+                      <small>
+                        {x.location} · Level {x.level || 0}
+                      </small>
+                      <p>{x.purpose}</p>
+                      <em>
+                        {parent ? `Under ${parent.name}` : "Root community"} ·{" "}
+                        {x.permissions?.allowSubgroups
+                          ? "Subgroups allowed"
+                          : "Closed hierarchy"}
+                      </em>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          </div>
         </section>
         <section className="panel">
           <div className="panel-title">

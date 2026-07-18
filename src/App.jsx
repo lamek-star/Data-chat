@@ -193,6 +193,36 @@ const seed = {
     paymentUrl: "",
     supportEmail: "support@datachat.app",
   },
+  communities: [
+    {
+      id: "community-global",
+      name: "DataChat Global Community",
+      location: "Global",
+      purpose: "Trusted communication and financial education across regions.",
+      parentId: null,
+      level: 0,
+      createdBy: "admin",
+      permissions: { allowSubgroups: true, allowInvites: true },
+      members: ["demo"],
+      contactMembers: [],
+      admins: ["admin"],
+      createdAt: "2026-07-18T00:00:00.000Z",
+    },
+    {
+      id: "community-uae",
+      name: "UAE Habesha Network",
+      location: "UAE",
+      purpose: "Local support, trusted contacts and community coordination.",
+      parentId: "community-global",
+      level: 1,
+      createdBy: "admin",
+      permissions: { allowSubgroups: true, allowInvites: true },
+      members: ["demo"],
+      contactMembers: [],
+      admins: ["admin"],
+      createdAt: "2026-07-18T00:00:00.000Z",
+    },
+  ],
 };
 const load = () => {
   try {
@@ -205,6 +235,7 @@ const load = () => {
       ...saved,
       users,
       accessCodes: saved.accessCodes || seed.accessCodes,
+      communities: saved.communities || seed.communities,
       adminConfig: { ...seed.adminConfig, ...(saved.adminConfig || {}) },
     };
   } catch {
@@ -1768,7 +1799,261 @@ function Portal({ db, save, user, setToast, setPage }) {
           </p>
         </div>
       </div>
+      <CommunityManager db={db} save={save} user={user} setToast={setToast} />
     </div>
+  );
+}
+function CommunityManager({ db, save, user, setToast }) {
+  const [createOpen, setCreateOpen] = useState(false);
+  const [manage, setManage] = useState(null);
+  const communities = db.communities || [];
+  const eligibleParents = communities.filter(
+    (x) => x.permissions?.allowSubgroups,
+  );
+  const createGroup = (e) => {
+    e.preventDefault();
+    const f = Object.fromEntries(new FormData(e.currentTarget));
+    const parent = communities.find((x) => x.id === f.parentId);
+    if (!parent)
+      return setToast("Choose an administrator-created parent community");
+    const group = {
+      id: uid("community"),
+      name: f.name,
+      location: f.location,
+      purpose: f.purpose,
+      parentId: parent.id,
+      level: (parent.level || 0) + 1,
+      createdBy: user.id,
+      permissions: {
+        allowSubgroups: f.allowSubgroups === "on",
+        allowInvites: true,
+      },
+      members: [user.id],
+      contactMembers: [],
+      admins: [user.id],
+      createdAt: new Date().toISOString(),
+    };
+    save((d) => ({ ...d, communities: [...(d.communities || []), group] }));
+    setToast(`${group.name} created under ${parent.name}`);
+    setCreateOpen(false);
+  };
+  const join = (group) => {
+    save((d) => ({
+      ...d,
+      communities: d.communities.map((x) =>
+        x.id === group.id
+          ? { ...x, members: [...new Set([...(x.members || []), user.id])] }
+          : x,
+      ),
+    }));
+    setToast(`Joined ${group.name}`);
+  };
+  const saveMembers = (e) => {
+    e.preventDefault();
+    const chosen = new FormData(e.currentTarget).getAll("contacts");
+    save((d) => ({
+      ...d,
+      communities: d.communities.map((x) =>
+        x.id === manage.id
+          ? {
+              ...x,
+              contactMembers: [
+                ...new Set([...(x.contactMembers || []), ...chosen]),
+              ],
+            }
+          : x,
+      ),
+    }));
+    setToast("Community invitations updated");
+    setManage(null);
+  };
+  return (
+    <section className="community-hub">
+      <div className="community-title">
+        <div>
+          <span className="eyebrow">COMMUNITY HIERARCHY</span>
+          <h2>Your communities</h2>
+          <p>
+            Create a local group beneath an approved parent community, then
+            invite trusted contacts.
+          </p>
+        </div>
+        <button
+          className="primary"
+          onClick={() => setCreateOpen(true)}
+          disabled={!eligibleParents.length}
+        >
+          <Icon name="UsersRound" />
+          Create community
+        </button>
+      </div>
+      <div className="community-tree">
+        {communities.map((group) => {
+          const parent = communities.find((x) => x.id === group.parentId);
+          const isMember = (group.members || []).includes(user.id);
+          const canManage =
+            (group.admins || []).includes(user.id) ||
+            group.createdBy === user.id;
+          return (
+            <article
+              key={group.id}
+              style={{ "--depth": Math.min(group.level || 0, 3) }}
+            >
+              <div className="community-path">
+                {parent ? (
+                  <>
+                    <Icon name="CornerDownRight" />
+                    Under {parent.name}
+                  </>
+                ) : (
+                  <>
+                    <Icon name="Network" />
+                    Administrator root
+                  </>
+                )}
+              </div>
+              <div className="community-main">
+                <span className="community-icon">
+                  <Icon name="MapPinned" />
+                </span>
+                <div>
+                  <h3>{group.name}</h3>
+                  <p>{group.purpose}</p>
+                  <div className="community-meta">
+                    <span>
+                      <Icon name="MapPin" />
+                      {group.location}
+                    </span>
+                    <span>
+                      <Icon name="Users" />
+                      {(group.members || []).length +
+                        (group.contactMembers || []).length}{" "}
+                      members
+                    </span>
+                    <span>
+                      <Icon name="ShieldCheck" />
+                      Level {group.level || 0}
+                    </span>
+                  </div>
+                </div>
+              </div>
+              <div className="community-actions">
+                {!isMember && (
+                  <button className="secondary" onClick={() => join(group)}>
+                    Join community
+                  </button>
+                )}
+                {canManage && group.permissions?.allowInvites && (
+                  <button
+                    className="secondary"
+                    onClick={() => setManage(group)}
+                  >
+                    <Icon name="UserPlus" />
+                    Invite contacts
+                  </button>
+                )}
+              </div>
+            </article>
+          );
+        })}
+      </div>
+      {createOpen && (
+        <Modal
+          title="Create a community group"
+          close={() => setCreateOpen(false)}
+        >
+          <form className="form" onSubmit={createGroup}>
+            <label>
+              Parent community
+              <select name="parentId" required defaultValue="">
+                <option value="" disabled>
+                  Choose approved community…
+                </option>
+                {eligibleParents.map((x) => (
+                  <option key={x.id} value={x.id}>
+                    {"—".repeat(x.level || 0)} {x.name} · {x.location}
+                  </option>
+                ))}
+              </select>
+              <small>Your group inherits its place in this hierarchy.</small>
+            </label>
+            <label>
+              Community name
+              <input name="name" required maxLength="60" />
+            </label>
+            <label>
+              Specific location
+              <input
+                name="location"
+                required
+                placeholder="City, region or country"
+              />
+            </label>
+            <label>
+              Purpose
+              <textarea
+                name="purpose"
+                required
+                minLength="12"
+                placeholder="What this community exists to do"
+              />
+            </label>
+            <label className="check-row">
+              <input type="checkbox" name="allowSubgroups" />
+              <span>
+                <b>Allow subgroups</b>
+                <small>
+                  Members with authority may create another level below this
+                  group.
+                </small>
+              </span>
+            </label>
+            <button className="primary">
+              <Icon name="Plus" />
+              Create community
+            </button>
+          </form>
+        </Modal>
+      )}
+      {manage && (
+        <Modal
+          title={`Invite contacts to ${manage.name}`}
+          close={() => setManage(null)}
+        >
+          <form className="form" onSubmit={saveMembers}>
+            <p className="form-note">
+              Invited contacts are added as community members in this workspace.
+            </p>
+            <div className="invite-list">
+              {db.contacts
+                .filter((x) => x.owner === user.id)
+                .map((x) => (
+                  <label className="check-row" key={x.id}>
+                    <input
+                      type="checkbox"
+                      name="contacts"
+                      value={x.id}
+                      defaultChecked={(manage.contactMembers || []).includes(
+                        x.id,
+                      )}
+                    />
+                    <span>
+                      <b>{x.name}</b>
+                      <small>
+                        {x.phone} · {x.country}
+                      </small>
+                    </span>
+                  </label>
+                ))}
+            </div>
+            <button className="primary">
+              <Icon name="Send" />
+              Save invitations
+            </button>
+          </form>
+        </Modal>
+      )}
+    </section>
   );
 }
 function Home({ db, save, user, setToast, setPage }) {
@@ -2694,6 +2979,7 @@ function RecordRow({ r, edit, del, update, handoff, share }) {
 }
 function TransactionChatCard({ message, db, save, user, setToast }) {
   const [qr, setQr] = useState("");
+  const [expanded, setExpanded] = useState(false);
   const data = message.transaction;
   const alreadyAdded = db.records.some(
     (x) => x.owner === user.id && x.importedFromMessage === message.id,
@@ -2733,13 +3019,28 @@ function TransactionChatCard({ message, db, save, user, setToast }) {
     setToast(`${data.reference} added to your transactions`);
   };
   return (
-    <article className={`transaction-message ${message.sender}`}>
+    <article
+      className={`transaction-message ${message.sender} ${expanded ? "expanded" : ""}`}
+      tabIndex="0"
+    >
       <div className="transaction-message-head">
         <span>
           <Icon name="ReceiptText" />
           <b>{data.reference}</b>
         </span>
         <small>{message.time}</small>
+        <button
+          className="transaction-toggle"
+          onClick={() => setExpanded((x) => !x)}
+          aria-expanded={expanded}
+          aria-label={
+            expanded
+              ? "Collapse transaction details"
+              : "Expand transaction details"
+          }
+        >
+          <Icon name={expanded ? "ChevronUp" : "ChevronDown"} />
+        </button>
       </div>
       <div className="transaction-message-body">
         {qr && (
