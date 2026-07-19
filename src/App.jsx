@@ -77,6 +77,15 @@ const seed = {
       status: "active",
     },
     {
+      id: "free-demo",
+      name: "Free Test User",
+      email: "free@datachat.app",
+      password: "free123",
+      plan: "Free",
+      role: "user",
+      status: "active",
+    },
+    {
       id: "admin",
       name: "DataChat Administrator",
       email: "admin@datachat.app",
@@ -236,7 +245,8 @@ const load = () => {
     const saved = JSON.parse(localStorage.getItem(K));
     if (!saved) return seed;
     const users = saved.users || [];
-    if (!users.some((x) => x.id === "admin")) users.push(seed.users[1]);
+    if (!users.some((x) => x.id === "free-demo")) users.push(seed.users[1]);
+    if (!users.some((x) => x.id === "admin")) users.push(seed.users[2]);
     return {
       ...seed,
       ...saved,
@@ -784,7 +794,11 @@ function Auth({ db, save, login }) {
               : "Already have an account? Sign in"}
           </button>
           {mode === "login" && (
-            <div className="demo">Demo: demo@datachat.app / demo123</div>
+            <div className="demo">
+              Pro demo: demo@datachat.app / demo123
+              <br />
+              Free demo: free@datachat.app / free123
+            </div>
           )}
           {mode === "register" && db.adminConfig?.paymentUrl && (
             <a
