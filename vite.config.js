@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 
 export default defineConfig({
   plugins: [react()],
+  server: { proxy: { "/api": "http://localhost:4242" } },
   build: {
     rollupOptions: {
       input: {

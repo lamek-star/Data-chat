@@ -14,6 +14,16 @@ npm install
 npm run dev
 ```
 
+This starts both Vite and the private payment server. Copy `.env.example` to `.env`, then add a Stripe test secret key and the ID of a recurring Pro Price. Never use a `VITE_` prefix for the Stripe secret key.
+
+For local webhook testing, install the Stripe CLI and forward events:
+
+```bash
+stripe listen --forward-to localhost:4242/api/stripe/webhook
+```
+
+Copy the reported `whsec_...` value into `STRIPE_WEBHOOK_SECRET`. Card checkout creates a Stripe-hosted subscription session; the app verifies the returned session with the server before granting Pro access. Cash customers can instead redeem a one-time Pro code generated in the administrator portal.
+
 Demo: `demo@datachat.app` / `demo123`
 
 Local administrator: `admin@datachat.app` / `admin123`

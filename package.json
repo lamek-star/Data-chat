@@ -1,1 +1,35 @@
-{"name":"datachat","private":true,"version":"1.1.0","type":"module","scripts":{"dev":"vite","build":"vite build","preview":"vite preview","mobile:sync":"npm run build && cap sync","android:open":"npm run mobile:sync && cap open android","ios:open":"npm run mobile:sync && cap open ios"},"dependencies":{"@capacitor/android":"^8.4.2","@capacitor/cli":"^8.4.2","@capacitor/core":"^8.4.2","@capacitor/ios":"^8.4.2","@vitejs/plugin-react":"latest","framer-motion":"^12.42.2","html5-qrcode":"^2.3.8","lucide-react":"latest","qrcode":"latest","react":"latest","react-dom":"latest","recharts":"latest","vite":"latest"}}
+{
+  "name": "datachat",
+  "private": true,
+  "version": "1.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently --kill-others-on-fail \"vite\" \"node server/index.js\"",
+    "dev:client": "vite",
+    "dev:payments": "node server/index.js",
+    "build": "vite build",
+    "preview": "vite preview",
+    "mobile:sync": "npm run build && cap sync",
+    "android:open": "npm run mobile:sync && cap open android",
+    "ios:open": "npm run mobile:sync && cap open ios"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.4.2",
+    "@capacitor/cli": "^8.4.2",
+    "@capacitor/core": "^8.4.2",
+    "@capacitor/ios": "^8.4.2",
+    "@vitejs/plugin-react": "latest",
+    "concurrently": "^10.0.3",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "framer-motion": "^12.42.2",
+    "html5-qrcode": "^2.3.8",
+    "lucide-react": "latest",
+    "qrcode": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "recharts": "latest",
+    "stripe": "^22.3.2",
+    "vite": "latest"
+  }
+}

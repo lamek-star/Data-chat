@@ -1393,6 +1393,21 @@ textarea {
 .pro-card li svg {
   color: var(--green);
 }
+.billing-options { display: grid; gap: 16px; margin-top: 20px; }
+.billing-choice { display: grid; grid-template-columns: 44px 1fr auto; align-items: center; gap: 12px; padding: 14px; border: 1px solid var(--border); border-radius: 12px; background: #091728; }
+.billing-choice > div, .billing-active span { display: grid; gap: 3px; }
+.billing-choice small, .cash-code-form small, .billing-active small { color: var(--muted); }
+.billing-icon { width: 44px; height: 44px; display: grid; place-items: center; border-radius: 10px; color: var(--gold2); background: #d7a62b18; }
+.billing-note { display: flex; align-items: flex-start; gap: 8px; margin: 0; color: #efc56b !important; font-size: 13px; }
+.billing-note svg { flex: 0 0 auto; margin-top: 1px; }
+.billing-divider { display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }
+.billing-divider::before, .billing-divider::after { content: ""; height: 1px; flex: 1; background: var(--border); }
+.cash-code-form { display: grid; gap: 8px; }
+.cash-code-form > div { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+.cash-code-form input { min-width: 0; text-transform: uppercase; letter-spacing: .06em; }
+.billing-error { margin: 0; }
+.billing-active { display: flex; align-items: center; gap: 12px; margin-top: 18px; padding: 14px; border: 1px solid #55c79555; border-radius: 12px; color: #75d7aa; background: #55c79510; }
+.primary:disabled, .secondary:disabled { opacity: .5; cursor: not-allowed; }
 dl {
   margin: 0;
 }
@@ -3091,6 +3106,9 @@ dd {
   gap: 8px;
 }
 @media (max-width: 760px) {
+  .billing-choice { grid-template-columns: 44px 1fr; }
+  .billing-choice .primary { grid-column: 1 / -1; width: 100%; }
+  .cash-code-form > div { grid-template-columns: 1fr; }
   .record-share,
   .asset-groups {
     grid-template-columns: 1fr;

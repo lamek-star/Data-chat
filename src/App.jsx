@@ -380,6 +380,32 @@ function App() {
       return () => clearTimeout(t);
     }
   }, [toast]);
+  useEffect(() => {
+    if (!user) return;
+    const params = new URLSearchParams(window.location.search);
+    const checkout = params.get("checkout");
+    const sessionId = params.get("session_id");
+    if (checkout === "cancelled") {
+      setToast("Checkout cancelled. No charge was made.");
+      window.history.replaceState({}, "", window.location.pathname);
+      return;
+    }
+    if (checkout !== "success" || !sessionId) return;
+    fetch(`/api/stripe/session-status?session_id=${encodeURIComponent(sessionId)}`)
+      .then(async (response) => {
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || "Could not verify payment.");
+        if (result.userId !== user.id || result.paymentStatus !== "paid") throw new Error("Stripe has not confirmed this subscription payment.");
+        const upgraded = { ...user, plan: "Pro", stripeCheckoutSession: sessionId };
+        setDb((d) => ({ ...d, users: d.users.map((x) => x.id === user.id ? { ...x, plan: "Pro", stripeCheckoutSession: sessionId } : x) }));
+        setUser(upgraded);
+        sessionStorage.setItem("dc-user", JSON.stringify(upgraded));
+        setPage("settings");
+        setToast("Payment confirmed. DataChat Pro is now active.");
+      })
+      .catch((error) => setToast(error.message))
+      .finally(() => window.history.replaceState({}, "", window.location.pathname));
+  }, [user?.id]);
   const save = (fn) => setDb((d) => (typeof fn === "function" ? fn(d) : fn));
   const login = (u) => {
     if (u.status === "suspended" || u.status === "pending") return;
@@ -398,12 +424,12 @@ function App() {
       <main>
         {page === "home" && <Home {...props} setPage={setPage} />}{" "}
         {page === "portal" && <Portal {...props} setPage={setPage} />}{" "}
-        {page === "rates" && user.plan === "Pro" && (
+        {page === "rates" && activeUser.plan === "Pro" && (
           <RatesMarketplace {...props} setPage={setPage} />
         )}{" "}
         {page === "records" && <Records {...props} />}{" "}
-        {page === "reports" && user.plan === "Pro" && <Reports {...props} />}{" "}
-        {(page === "rates" || page === "reports") && user.plan !== "Pro" && (
+        {page === "reports" && activeUser.plan === "Pro" && <Reports {...props} />}{" "}
+        {(page === "rates" || page === "reports") && activeUser.plan !== "Pro" && (
           <PremiumGate
             feature={
               page === "rates"
@@ -416,6 +442,11 @@ function App() {
         {page === "settings" && (
           <Settings
             {...props}
+            onPlanChanged={(changes) => {
+              const next = { ...activeUser, ...changes };
+              setUser(next);
+              sessionStorage.setItem("dc-user", JSON.stringify(next));
+            }}
             logout={() => {
               sessionStorage.removeItem("dc-user");
               setUser(null);
@@ -4400,9 +4431,53 @@ function BackupPanel({ db, save, user, setToast }) {
     </section>
   );
 }
-function Settings({ db, save, user, logout, setToast }) {
+function Settings({ db, save, user, logout, setToast, onPlanChanged }) {
   const [agreement, setAgreement] = useState(false),
-    [geez, setGeez] = useState(localStorage.getItem("geez") === "true");
+    [geez, setGeez] = useState(localStorage.getItem("geez") === "true"),
+    [billing, setBilling] = useState({ configured: false, priceLabel: "Set in Stripe" }),
+    [billingBusy, setBillingBusy] = useState(false),
+    [billingError, setBillingError] = useState("");
+  useEffect(() => {
+    fetch("/api/stripe/config")
+      .then((response) => response.json())
+      .then(setBilling)
+      .catch(() => setBilling({ configured: false, priceLabel: "Server unavailable" }));
+  }, []);
+  const startCardCheckout = async () => {
+    setBillingBusy(true);
+    setBillingError("");
+    try {
+      const response = await fetch("/api/stripe/create-checkout-session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: user.id, email: user.email }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Checkout could not start.");
+      window.location.assign(result.url);
+    } catch (error) {
+      setBillingError(error.message);
+      setBillingBusy(false);
+    }
+  };
+  const redeemCashCode = (event) => {
+    event.preventDefault();
+    setBillingError("");
+    const code = new FormData(event.currentTarget).get("cashCode").trim().toUpperCase();
+    const match = (db.accessCodes || []).find((item) => item.code.toUpperCase() === code);
+    if (!match) return setBillingError("Code not found. Check the code issued by the administrator.");
+    if (match.status !== "available") return setBillingError("This code has already been used and cannot be redeemed again.");
+    if ((match.plan || "Free") !== "Pro") return setBillingError("This code does not activate the Pro plan.");
+    const now = new Date().toISOString();
+    save((d) => ({
+      ...d,
+      users: d.users.map((x) => x.id === user.id ? { ...x, plan: "Pro", cashCodeId: match.id } : x),
+      accessCodes: (d.accessCodes || []).map((x) => x.id === match.id ? { ...x, status: "used", usedBy: user.email, usedAt: now } : x),
+    }));
+    onPlanChanged({ plan: "Pro", cashCodeId: match.id });
+    event.currentTarget.reset();
+    setToast("Cash code accepted. DataChat Pro is now active.");
+  };
   const choosePhoto = (file) => {
     if (!file) return;
     if (!file.type.startsWith("image/") || file.size > 2 * 1024 * 1024)
@@ -4504,12 +4579,30 @@ function Settings({ db, save, user, logout, setToast }) {
               Advanced analytics and exports
             </li>
           </ul>
-          <button
-            className="primary"
-            onClick={() => setToast("Your Pro workspace is active")}
-          >
-            Manage plan
-          </button>
+          {user.plan === "Pro" ? (
+            <div className="billing-active" role="status">
+              <Icon name="BadgeCheck" />
+              <span><b>Pro is active</b><small>Your premium features are unlocked.</small></span>
+            </div>
+          ) : (
+            <div className="billing-options">
+              <div className="billing-choice">
+                <span className="billing-icon"><Icon name="CreditCard" /></span>
+                <div><b>Card subscription</b><small>{billing.priceLabel} · processed securely by Stripe</small></div>
+                <button className="primary" disabled={billingBusy} onClick={startCardCheckout}>
+                  {billingBusy ? "Opening checkout…" : "Pay securely by card"}
+                </button>
+              </div>
+              {!billing.configured && <p className="billing-note"><Icon name="Info" /> Card checkout is in setup mode. Add the Stripe server keys to enable it.</p>}
+              <div className="billing-divider"><span>or pay cash</span></div>
+              <form className="cash-code-form" onSubmit={redeemCashCode}>
+                <label htmlFor="cash-code">Administrator activation code</label>
+                <div><input id="cash-code" name="cashCode" required autoComplete="one-time-code" placeholder="DC-ABC-123" /><button className="secondary">Activate Pro</button></div>
+                <small>Pay the administrator in cash, then enter the unique unused code you receive.</small>
+              </form>
+              {billingError && <div className="error billing-error" role="alert">{billingError}</div>}
+            </div>
+          )}
         </section>
         <section className="panel">
           <div className="panel-title">
