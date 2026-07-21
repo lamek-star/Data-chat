@@ -17,6 +17,13 @@ import {
   signOut as cloudSignOut,
   loadAppData,
   overwriteAppData,
+  upsertPublicProfile,
+  findPublicProfile,
+  loadDirectMessages,
+  loadPublicProfiles,
+  sendDirectMessage,
+  subscribeToDirectMessages,
+  unsubscribeChannel,
 } from "./cloud/supabaseClient";
 import * as I from "lucide-react";
 import QRCode from "qrcode";
@@ -34,8 +41,12 @@ import {
 } from "recharts";
 
 const K = "datachat-v1";
-const API_BASE = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
-const STRIPE_PAYMENT_LINK = import.meta.env.VITE_STRIPE_PAYMENT_LINK || "";
+const API_BASE = (
+  import.meta.env.VITE_API_BASE_URL || "https://datachat.harmongt.uk"
+).replace(/\/$/, "");
+const STRIPE_PAYMENT_LINK =
+  import.meta.env.VITE_STRIPE_PAYMENT_LINK ||
+  "https://buy.stripe.com/test_eVq5kD42Fcqe0ALaoJao801";
 const apiUrl = (path) => `${API_BASE}${path}`;
 const communityMembers = [
   {
@@ -321,8 +332,12 @@ const buildCloudDb = (rows, userId, profile = {}) => {
 };
 
 async function loadCloudDb(authUser) {
-  const rows = await loadAppData(authUser.id);
-  return buildCloudDb(rows, authUser.id, {
+  const [rows, publicProfile, remoteMessages] = await Promise.all([
+    loadAppData(authUser.id),
+    upsertPublicProfile(authUser),
+    loadDirectMessages(authUser.id),
+  ]);
+  const cloudDb = buildCloudDb(rows, authUser.id, {
     name: authUser.user_metadata?.name || authUser.email?.split("@")[0],
     email: authUser.email,
     plan: authUser.user_metadata?.plan || "Free",
@@ -330,6 +345,60 @@ async function loadCloudDb(authUser) {
     status: authUser.user_metadata?.status || "active",
     createdAt: authUser.user_metadata?.createdAt,
   });
+  cloudDb.users[0] = {
+    ...cloudDb.users[0],
+    contactCode: publicProfile.contact_code,
+    country: publicProfile.country,
+  };
+  const peerIds = remoteMessages.map((message) =>
+    message.sender_id === authUser.id ? message.recipient_id : message.sender_id,
+  );
+  const profiles = await loadPublicProfiles(peerIds);
+  const profileById = new Map(profiles.map((profile) => [profile.id, profile]));
+  const contactByRemoteId = new Map(
+    cloudDb.contacts
+      .filter((contact) => contact.remoteUserId)
+      .map((contact) => [contact.remoteUserId, contact]),
+  );
+  for (const peerId of new Set(peerIds)) {
+    if (contactByRemoteId.has(peerId)) continue;
+    const profile = profileById.get(peerId);
+    if (!profile) continue;
+    const contact = {
+      id: `cloud-${peerId}`,
+      remoteUserId: peerId,
+      contactCode: profile.contact_code,
+      owner: authUser.id,
+      name: profile.display_name,
+      phone: `ID ${profile.contact_code}`,
+      country: profile.country || "Global",
+      color: "#4c8ed9",
+      isOnline: true,
+    };
+    cloudDb.contacts.push(contact);
+    contactByRemoteId.set(peerId, contact);
+  }
+  const knownMessageIds = new Set(cloudDb.messages.map((message) => message.id));
+  for (const row of remoteMessages) {
+    if (knownMessageIds.has(row.id)) continue;
+    const peerId = row.sender_id === authUser.id ? row.recipient_id : row.sender_id;
+    const contact = contactByRemoteId.get(peerId);
+    if (!contact) continue;
+    cloudDb.messages.push({
+      ...row.payload,
+      id: row.id,
+      owner: authUser.id,
+      contact: contact.id,
+      sender: row.sender_id === authUser.id ? "me" : "them",
+      time:
+        row.payload?.time ||
+        new Date(row.created_at).toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit",
+        }),
+    });
+  }
+  return cloudDb;
 }
 
 const serializeCloudRows = (dbState, userId) => {
@@ -545,6 +614,23 @@ function App() {
       .catch((error) => setToast(`Cloud data load failed: ${error.message}`));
     return () => {
       active = false;
+    };
+  }, [cloudAuthUser]);
+
+  useEffect(() => {
+    if (!cloudConfigured || !cloudAuthUser) return;
+    const refresh = () =>
+      loadCloudDb(cloudAuthUser)
+        .then((cloudDb) => {
+          setDb(cloudDb);
+          setUser(cloudDb.users[0]);
+        })
+        .catch((error) => setToast(`Message refresh failed: ${error.message}`));
+    const channel = subscribeToDirectMessages(refresh);
+    const timer = setInterval(refresh, 15000);
+    return () => {
+      clearInterval(timer);
+      unsubscribeChannel(channel);
     };
   }, [cloudAuthUser]);
 
@@ -856,6 +942,10 @@ function Auth({ db, save, login }) {
           return setErr(
             "Check your email to confirm registration before signing in.",
           );
+        if (!result.session)
+          return setErr(
+            "Registration received. Check your email, confirm the account, then sign in.",
+          );
         await overwriteAppData(createdUser.id, [
           {
             entity_type: "profile",
@@ -1072,7 +1162,7 @@ function Auth({ db, save, login }) {
               ? "First time here? Create an account"
               : "Already have an account? Sign in"}
           </button>
-          {mode === "login" && (
+          {mode === "login" && !cloudConfigured && (
             <div className="demo">
               Pro demo: demo@datachat.app / demo123
               <br />
@@ -2385,52 +2475,64 @@ function Home({ db, save, user, setToast, setPage }) {
     msgs = db.messages.filter(
       (x) => x.owner === user.id && x.contact === selected,
     );
-  const send = (e) => {
+  const send = async (e) => {
     e.preventDefault();
     if (c?.blocked) return setToast("This member is blocked");
     const inp = e.currentTarget.elements.message;
     if (!inp.value.trim()) return;
+    const message = {
+      id: c?.remoteUserId ? crypto.randomUUID() : uid("m"),
+      owner: user.id,
+      contact: selected,
+      sender: "me",
+      content: inp.value.trim(),
+      time: new Date().toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+      }),
+    };
+    if (c?.remoteUserId) {
+      try {
+        await sendDirectMessage(c.remoteUserId, message);
+      } catch (error) {
+        setToast(`Message not sent: ${error.message}`);
+        return;
+      }
+    }
     save((d) => ({
       ...d,
-      messages: [
-        ...d.messages,
-        {
-          id: uid("m"),
-          owner: user.id,
-          contact: selected,
-          sender: "me",
-          content: inp.value.trim(),
-          time: new Date().toLocaleTimeString([], {
-            hour: "2-digit",
-            minute: "2-digit",
-          }),
-        },
-      ],
+      messages: [...d.messages, message],
     }));
     inp.value = "";
   };
-  const sendTransaction = (record) => {
+  const sendTransaction = async (record) => {
     if (!c || c.blocked) return;
     const transaction = transactionPayload(record);
     const content = transactionText(transaction);
+    const message = {
+      id: c.remoteUserId ? crypto.randomUUID() : uid("m"),
+      owner: user.id,
+      contact: c.id,
+      sender: "me",
+      content,
+      time: new Date().toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+      }),
+      recordId: record.id,
+      transaction,
+    };
+    if (c.remoteUserId) {
+      try {
+        await sendDirectMessage(c.remoteUserId, message);
+      } catch (error) {
+        setToast(`Transaction not sent: ${error.message}`);
+        return;
+      }
+    }
     save((d) => ({
       ...d,
-      messages: [
-        ...d.messages,
-        {
-          id: uid("m"),
-          owner: user.id,
-          contact: c.id,
-          sender: "me",
-          content,
-          time: new Date().toLocaleTimeString([], {
-            hour: "2-digit",
-            minute: "2-digit",
-          }),
-          recordId: record.id,
-          transaction,
-        },
-      ],
+      messages: [...d.messages, message],
     }));
     setAttachments(false);
     setToast(`Transaction ${record.id} sent to ${c.name}`);
@@ -2452,6 +2554,7 @@ function Home({ db, save, user, setToast, setPage }) {
               <button className="icon-btn" aria-label="Notifications">
                 <Icon name="Bell" />
               </button>
+              <MyContactQr user={user} setToast={setToast} />
               <button className="primary compact" onClick={() => setAdd(true)}>
                 <Icon name="UserPlus" />
                 Add contact
@@ -2754,6 +2857,64 @@ function ReportUser({ contact, messages, user, save, setToast, close }) {
     </Modal>
   );
 }
+function MyContactQr({ user, setToast }) {
+  const [open, setOpen] = useState(false),
+    [url, setUrl] = useState("");
+  const payload = JSON.stringify({
+    version: 1,
+    type: "datachat-user-contact",
+    userId: user.id,
+    contactCode:
+      user.contactCode ||
+      String(user.id).replaceAll("-", "").slice(0, 12).toUpperCase(),
+    name: user.name,
+    country: user.country || "Global",
+  });
+  useEffect(() => {
+    if (open)
+      QRCode.toDataURL(payload, {
+        margin: 3,
+        width: 320,
+        errorCorrectionLevel: "M",
+      }).then(setUrl);
+  }, [open, payload]);
+  return (
+    <>
+      <button
+        className="icon-btn"
+        aria-label="Show my contact QR code"
+        title="My contact QR"
+        onClick={() => setOpen(true)}
+      >
+        <Icon name="QrCode" />
+      </button>
+      {open && (
+        <Modal title="My DataChat contact" close={() => setOpen(false)}>
+          <div className="qr share-card">
+            {url && <img src={url} alt={`Contact QR code for ${user.name}`} />}
+            <div className="share-summary">
+              <b>{user.name}</b>
+              <span>Code {JSON.parse(payload).contactCode}</span>
+              <small>Ask another DataChat user to scan this code.</small>
+            </div>
+            <div className="share-actions">
+              <button
+                className="secondary"
+                onClick={() => {
+                  navigator.clipboard?.writeText(payload);
+                  setToast("Your contact code was copied");
+                }}
+              >
+                <Icon name="Copy" />
+                Copy contact code
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+    </>
+  );
+}
 function ContactQr({ c, setToast }) {
   const [open, setOpen] = useState(false),
     [url, setUrl] = useState("");
@@ -2828,9 +2989,71 @@ function ContactQr({ c, setToast }) {
   );
 }
 function ContactModal({ user, save, close, setToast }) {
-  const submit = (e) => {
+  const [scanError, setScanError] = useState(""),
+    [busy, setBusy] = useState(false),
+    fileRef = useRef(null);
+  const addRemoteProfile = (profile) => {
+    if (!profile) throw new Error("No DataChat account matches that code.");
+    if (profile.id === user.id) throw new Error("You cannot add your own account.");
+    save((d) => {
+      if (d.contacts.some((contact) => contact.remoteUserId === profile.id))
+        return d;
+      return {
+        ...d,
+        contacts: [
+          ...d.contacts,
+          {
+            id: `cloud-${profile.id}`,
+            remoteUserId: profile.id,
+            contactCode: profile.contact_code,
+            owner: user.id,
+            name: profile.display_name,
+            phone: `ID ${profile.contact_code}`,
+            country: profile.country || "Global",
+            color: ["#d7a62b", "#4c8ed9", "#8f69d8", "#35a57a"][d.contacts.length % 4],
+            isOnline: true,
+          },
+        ],
+      };
+    });
+    setToast(`${profile.display_name} added. You can now message each other.`);
+    close();
+  };
+  const scanFile = async (file) => {
+    if (!file) return;
+    setBusy(true);
+    setScanError("");
+    try {
+      const scanner = new Html5Qrcode("contact-qr-reader");
+      const value = await scanner.scanFile(file, false);
+      await scanner.clear();
+      const payload = JSON.parse(value);
+      if (payload.type !== "datachat-user-contact" || !payload.userId)
+        throw new Error("This is not a DataChat user contact QR code.");
+      const profile = await findPublicProfile({ userId: payload.userId });
+      addRemoteProfile(profile);
+    } catch (error) {
+      setScanError(error.message || "No readable DataChat contact was found.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const submit = async (e) => {
     e.preventDefault();
     const f = new FormData(e.currentTarget);
+    const contactCode = String(f.get("contactCode") || "").trim();
+    if (cloudConfigured && contactCode) {
+      setBusy(true);
+      setScanError("");
+      try {
+        const profile = await findPublicProfile({ contactCode });
+        addRemoteProfile(profile);
+      } catch (error) {
+        setScanError(error.message);
+        setBusy(false);
+      }
+      return;
+    }
     save((d) => ({
       ...d,
       contacts: [
@@ -2853,13 +3076,36 @@ function ContactModal({ user, save, close, setToast }) {
   return (
     <Modal title="Add trusted contact" close={close}>
       <form className="form" onSubmit={submit}>
+        {cloudConfigured && (
+          <>
+            <div className="scan-contact-card">
+              <span><Icon name="ScanLine" /></span>
+              <div>
+                <b>Scan their DataChat QR</b>
+                <small>Choose a QR image or take a photo with your phone.</small>
+              </div>
+              <button type="button" className="primary" disabled={busy} onClick={() => fileRef.current?.click()}>
+                {busy ? "Reading…" : "Scan QR"}
+              </button>
+              <input ref={fileRef} hidden type="file" accept="image/*" capture="environment" onChange={(event) => scanFile(event.target.files?.[0])} />
+              <div id="contact-qr-reader" />
+            </div>
+            <div className="billing-divider"><span>or enter their code</span></div>
+            <label>
+              DataChat contact code
+              <input name="contactCode" autoCapitalize="characters" placeholder="12-character code" />
+              <small>The code is displayed beneath the user’s personal QR.</small>
+            </label>
+            {scanError && <div className="error" role="alert">{scanError}</div>}
+          </>
+        )}
         <label>
           Full name
-          <input name="name" required />
+          <input name="name" required={!cloudConfigured} />
         </label>
         <label>
           Phone number
-          <input name="phone" required type="tel" />
+          <input name="phone" required={!cloudConfigured} type="tel" />
         </label>
         <label>
           Country
@@ -2869,7 +3115,7 @@ function ContactModal({ user, save, close, setToast }) {
             ))}
           </select>
         </label>
-        <button className="primary">Add contact</button>
+        <button className="primary" disabled={busy}>{cloudConfigured ? "Add by contact code" : "Add contact"}</button>
       </form>
     </Modal>
   );

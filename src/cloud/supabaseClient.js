@@ -1,7 +1,11 @@
 import { createClient } from "@supabase/supabase-js";
 
-const url = import.meta.env.VITE_SUPABASE_URL;
-const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const url =
+  import.meta.env.VITE_SUPABASE_URL ||
+  "https://ufneentdbsdmfiwvjthj.supabase.co";
+const anonKey =
+  import.meta.env.VITE_SUPABASE_ANON_KEY ||
+  "sb_publishable_kF_WLO_XatQrqmp_a9Ls2g_IcA6NTgL";
 const appId = import.meta.env.VITE_DATACHAT_APP_ID || "datachat";
 
 export const cloudConfigured = Boolean(url && anonKey);
@@ -114,4 +118,93 @@ export async function createBackupUrl(path, expiresIn = 60) {
     .createSignedUrl(path, expiresIn);
   if (error) throw error;
   return data?.signedUrl;
+}
+
+export async function upsertPublicProfile(user) {
+  const client = requireSupabase();
+  const profile = {
+    id: user.id,
+    display_name:
+      user.user_metadata?.name || user.email?.split("@")[0] || "DataChat member",
+    contact_code: String(user.id).replaceAll("-", "").slice(0, 12).toUpperCase(),
+    country: user.user_metadata?.country || "Global",
+    updated_at: new Date().toISOString(),
+  };
+  const { data, error } = await client
+    .from("profiles")
+    .upsert(profile, { onConflict: "id" })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function findPublicProfile({ userId, contactCode }) {
+  const client = requireSupabase();
+  let query = client
+    .from("profiles")
+    .select("id, display_name, contact_code, country");
+  query = userId
+    ? query.eq("id", userId)
+    : query.eq("contact_code", String(contactCode || "").trim().toUpperCase());
+  const { data, error } = await query.maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
+export async function loadDirectMessages(userId) {
+  const client = requireSupabase();
+  const { data, error } = await client
+    .from("direct_messages")
+    .select("id, sender_id, recipient_id, payload, created_at, read_at")
+    .or(`sender_id.eq.${userId},recipient_id.eq.${userId}`)
+    .order("created_at", { ascending: true });
+  if (error) throw error;
+  return data || [];
+}
+
+export async function loadPublicProfiles(userIds) {
+  if (!userIds?.length) return [];
+  const client = requireSupabase();
+  const { data, error } = await client
+    .from("profiles")
+    .select("id, display_name, contact_code, country")
+    .in("id", [...new Set(userIds)]);
+  if (error) throw error;
+  return data || [];
+}
+
+export async function sendDirectMessage(recipientId, message) {
+  const client = requireSupabase();
+  const { data: authData, error: authError } = await client.auth.getUser();
+  if (authError || !authData.user) throw authError || new Error("Sign in again.");
+  const { data, error } = await client
+    .from("direct_messages")
+    .insert({
+      id: message.id,
+      sender_id: authData.user.id,
+      recipient_id: recipientId,
+      payload: message,
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export function subscribeToDirectMessages(callback) {
+  const client = requireSupabase();
+  return client
+    .channel("datachat-direct-messages")
+    .on(
+      "postgres_changes",
+      { event: "INSERT", schema: "public", table: "direct_messages" },
+      callback,
+    )
+    .subscribe();
+}
+
+export function unsubscribeChannel(channel) {
+  if (!supabase || !channel) return;
+  return supabase.removeChannel(channel);
 }

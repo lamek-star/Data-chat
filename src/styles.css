@@ -1407,6 +1407,11 @@ textarea {
 .cash-code-form input { min-width: 0; text-transform: uppercase; letter-spacing: .06em; }
 .billing-error { margin: 0; }
 .billing-active { display: flex; align-items: center; gap: 12px; margin-top: 18px; padding: 14px; border: 1px solid #55c79555; border-radius: 12px; color: #75d7aa; background: #55c79510; }
+.scan-contact-card { display: grid; grid-template-columns: 44px 1fr auto; align-items: center; gap: 12px; padding: 14px; border: 1px solid var(--border); border-radius: 12px; background: #091728; }
+.scan-contact-card > span { width: 44px; height: 44px; display: grid; place-items: center; border-radius: 10px; color: var(--gold2); background: #d7a62b18; }
+.scan-contact-card > div { display: grid; gap: 3px; }
+.scan-contact-card small { color: var(--muted); }
+.scan-contact-card input, .scan-contact-card #contact-qr-reader { display: none; }
 .primary:disabled, .secondary:disabled { opacity: .5; cursor: not-allowed; }
 dl {
   margin: 0;
@@ -3109,6 +3114,8 @@ dd {
   .billing-choice { grid-template-columns: 44px 1fr; }
   .billing-choice .primary { grid-column: 1 / -1; width: 100%; }
   .cash-code-form > div { grid-template-columns: 1fr; }
+  .scan-contact-card { grid-template-columns: 44px 1fr; }
+  .scan-contact-card .primary { grid-column: 1 / -1; width: 100%; }
   .record-share,
   .asset-groups {
     grid-template-columns: 1fr;
