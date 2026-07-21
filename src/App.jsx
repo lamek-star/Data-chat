@@ -7,6 +7,17 @@ import {
   getMetalPrice,
   getSupportedCurrencies,
 } from "./services/publicApis";
+import {
+  cloudConfigured,
+  cloudConfig,
+  getSession,
+  onAuthStateChange,
+  signIn as cloudSignIn,
+  signUp as cloudSignUp,
+  signOut as cloudSignOut,
+  loadAppData,
+  overwriteAppData,
+} from "./cloud/supabaseClient";
 import * as I from "lucide-react";
 import QRCode from "qrcode";
 import { Html5Qrcode } from "html5-qrcode";
@@ -23,6 +34,9 @@ import {
 } from "recharts";
 
 const K = "datachat-v1";
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
+const STRIPE_PAYMENT_LINK = import.meta.env.VITE_STRIPE_PAYMENT_LINK || "";
+const apiUrl = (path) => `${API_BASE}${path}`;
 const communityMembers = [
   {
     id: "p1",
@@ -206,7 +220,7 @@ const seed = {
   ],
   adminConfig: {
     repositoryUrl: "https://github.com/lamek-star/Data-chat",
-    paymentUrl: "",
+    paymentUrl: STRIPE_PAYMENT_LINK,
     supportEmail: "support@datachat.app",
   },
   communities: [
@@ -259,6 +273,120 @@ const load = () => {
     return seed;
   }
 };
+
+const buildCloudDb = (rows, userId, profile = {}) => {
+  const profileRow = rows.find(
+    (row) => row.entity_type === "profile" && row.entity_id === userId,
+  );
+  const profileData = {
+    ...profileRow?.payload,
+    ...profile,
+    email: profileRow?.payload?.email || profile?.email,
+  };
+  const currentUser = {
+    id: userId,
+    name: profileData.name || "",
+    email: profileData.email || "",
+    plan: profileData.plan || "Free",
+    role: profileData.role || "user",
+    status: profileData.status || "active",
+    createdAt: profileData.createdAt || new Date().toISOString(),
+  };
+  const records = rows
+    .filter((row) => row.entity_type === "transaction")
+    .map((row) => ({ id: row.entity_id, ...row.payload }));
+  const contacts = rows
+    .filter((row) => row.entity_type === "contact")
+    .map((row) => ({ id: row.entity_id, ...row.payload }));
+  const messages = rows
+    .filter((row) => row.entity_type === "message")
+    .map((row) => ({ id: row.entity_id, ...row.payload }));
+  const notifications = rows
+    .filter((row) => row.entity_type === "notification")
+    .map((row) => ({ id: row.entity_id, ...row.payload }));
+  const accessCodes = rows
+    .filter((row) => row.entity_type === "accessCode")
+    .map((row) => ({ id: row.entity_id, ...row.payload }));
+  return {
+    ...seed,
+    users: [currentUser],
+    records,
+    contacts,
+    messages,
+    notifications,
+    accessCodes,
+    communities: seed.communities,
+    adminConfig: seed.adminConfig,
+  };
+};
+
+async function loadCloudDb(authUser) {
+  const rows = await loadAppData(authUser.id);
+  return buildCloudDb(rows, authUser.id, {
+    name: authUser.user_metadata?.name || authUser.email?.split("@")[0],
+    email: authUser.email,
+    plan: authUser.user_metadata?.plan || "Free",
+    role: authUser.user_metadata?.role || "user",
+    status: authUser.user_metadata?.status || "active",
+    createdAt: authUser.user_metadata?.createdAt,
+  });
+}
+
+const serializeCloudRows = (dbState, userId) => {
+  const currentUser = dbState.users.find((x) => x.id === userId) || {
+    id: userId,
+    name: "",
+    email: "",
+    plan: "Free",
+    role: "user",
+    status: "active",
+    createdAt: new Date().toISOString(),
+  };
+  return [
+    {
+      entity_type: "profile",
+      entity_id: userId,
+      payload: {
+        name: currentUser.name,
+        email: currentUser.email,
+        plan: currentUser.plan,
+        role: currentUser.role,
+        status: currentUser.status,
+        createdAt: currentUser.createdAt || new Date().toISOString(),
+      },
+    },
+    ...dbState.records.map((record) => ({
+      entity_type: "transaction",
+      entity_id: record.id,
+      payload: record,
+    })),
+    ...dbState.contacts.map((contact) => ({
+      entity_type: "contact",
+      entity_id: contact.id,
+      payload: contact,
+    })),
+    ...dbState.messages.map((message) => ({
+      entity_type: "message",
+      entity_id: message.id,
+      payload: message,
+    })),
+    ...dbState.notifications.map((notification) => ({
+      entity_type: "notification",
+      entity_id: notification.id,
+      payload: notification,
+    })),
+    ...dbState.accessCodes.map((code) => ({
+      entity_type: "accessCode",
+      entity_id: code.id,
+      payload: code,
+    })),
+  ];
+};
+
+async function persistCloudData(state, userId) {
+  const rows = serializeCloudRows(state, userId);
+  await overwriteAppData(userId, rows);
+}
 const money = (n, c = "USD") =>
   new Intl.NumberFormat("en-US", {
     style: "currency",
@@ -370,16 +498,56 @@ function App() {
     [user, setUser] = useState(() =>
       JSON.parse(sessionStorage.getItem("dc-user") || "null"),
     ),
+    [cloudAuthUser, setCloudAuthUser] = useState(null),
     [page, setPage] = useState("home"),
     [toast, setToast] = useState(""),
     [onboarding, setOnboarding] = useState(false);
-  useEffect(() => localStorage.setItem(K, JSON.stringify(db)), [db]);
+
+  useEffect(() => {
+    if (!cloudConfigured) localStorage.setItem(K, JSON.stringify(db));
+  }, [db]);
+
   useEffect(() => {
     if (toast) {
       const t = setTimeout(() => setToast(""), 2600);
       return () => clearTimeout(t);
     }
   }, [toast]);
+
+  useEffect(() => {
+    if (!cloudConfigured) return;
+    let active = true;
+    getSession()
+      .then((session) => {
+        if (!active) return;
+        if (session?.user) setCloudAuthUser(session.user);
+      })
+      .catch(() => {});
+    const subscription = onAuthStateChange((_event, session) => {
+      setCloudAuthUser(session?.user || null);
+      if (!session?.user) setUser(null);
+    });
+    return () => {
+      active = false;
+      subscription?.unsubscribe?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!cloudConfigured || !cloudAuthUser) return;
+    let active = true;
+    loadCloudDb(cloudAuthUser)
+      .then((cloudDb) => {
+        if (!active) return;
+        setDb(cloudDb);
+        setUser(cloudDb.users[0]);
+      })
+      .catch((error) => setToast(`Cloud data load failed: ${error.message}`));
+    return () => {
+      active = false;
+    };
+  }, [cloudAuthUser]);
+
   useEffect(() => {
     if (!user) return;
     const params = new URLSearchParams(window.location.search);
@@ -391,7 +559,7 @@ function App() {
       return;
     }
     if (checkout !== "success" || !sessionId) return;
-    fetch(`/api/stripe/session-status?session_id=${encodeURIComponent(sessionId)}`)
+    fetch(apiUrl(`/api/stripe/session-status?session_id=${encodeURIComponent(sessionId)}`))
       .then(async (response) => {
         const result = await response.json();
         if (!response.ok) throw new Error(result.error || "Could not verify payment.");
@@ -399,19 +567,32 @@ function App() {
         const upgraded = { ...user, plan: "Pro", stripeCheckoutSession: sessionId };
         setDb((d) => ({ ...d, users: d.users.map((x) => x.id === user.id ? { ...x, plan: "Pro", stripeCheckoutSession: sessionId } : x) }));
         setUser(upgraded);
-        sessionStorage.setItem("dc-user", JSON.stringify(upgraded));
+        if (!cloudConfigured) sessionStorage.setItem("dc-user", JSON.stringify(upgraded));
         setPage("settings");
         setToast("Payment confirmed. DataChat Pro is now active.");
       })
       .catch((error) => setToast(error.message))
       .finally(() => window.history.replaceState({}, "", window.location.pathname));
   }, [user?.id]);
-  const save = (fn) => setDb((d) => (typeof fn === "function" ? fn(d) : fn));
+
+  const save = (fn) =>
+    setDb((d) => {
+      const next = typeof fn === "function" ? fn(d) : fn;
+      if (cloudConfigured && user?.id) {
+        persistCloudData(next, user.id).catch((error) =>
+          setToast(`Cloud sync failed: ${error.message}`),
+        );
+      } else {
+        localStorage.setItem(K, JSON.stringify(next));
+      }
+      return next;
+    });
+
   const login = (u) => {
     if (u.status === "suspended" || u.status === "pending") return;
     setUser(u);
     if (u.role === "admin") return;
-    sessionStorage.setItem("dc-user", JSON.stringify(u));
+    if (!cloudConfigured) sessionStorage.setItem("dc-user", JSON.stringify(u));
     if (u.role !== "admin" && !localStorage.getItem(`dc-onboarded-${u.id}`))
       setOnboarding(true);
   };
@@ -448,6 +629,7 @@ function App() {
               sessionStorage.setItem("dc-user", JSON.stringify(next));
             }}
             logout={() => {
+              if (cloudConfigured) cloudSignOut().catch(() => {});
               sessionStorage.removeItem("dc-user");
               setUser(null);
             }}
@@ -631,11 +813,77 @@ function Auth({ db, save, login }) {
     );
     return () => clearInterval(timer);
   }, []);
-  const submit = (e) => {
+  const submit = async (e) => {
     e.preventDefault();
     const f = new FormData(e.currentTarget);
     const email = f.get("email").trim().toLowerCase();
     const password = f.get("password");
+    if (cloudConfigured) {
+      if (mode === "login") {
+        try {
+          const result = await cloudSignIn(email, password);
+          if (!result?.user) throw new Error("Unable to sign in.");
+          const cloudDb = await loadCloudDb(result.user);
+          login(cloudDb.users[0]);
+        } catch (error) {
+          setErr(error.message);
+        }
+        return;
+      }
+
+      if (db.users.some((x) => x.email === email))
+        return setErr("An account already exists for this email.");
+      const enteredCode = f.get("accessCode").trim().toUpperCase();
+      const access = (db.accessCodes || []).find(
+        (x) => x.code === enteredCode && x.status === "available",
+      );
+      if (!access)
+        return setErr("A valid unused administrator access code is required.");
+      if (f.get("agreement") !== "on")
+        return setErr("You must accept the User Access & Privacy Agreement.");
+      const metadata = {
+        name: f.get("name"),
+        email,
+        plan: access.plan || "Free",
+        role: "user",
+        status: "active",
+        createdAt: new Date().toISOString(),
+      };
+      try {
+        const result = await cloudSignUp(email, password, metadata);
+        const createdUser = result.user;
+        if (!createdUser)
+          return setErr(
+            "Check your email to confirm registration before signing in.",
+          );
+        await overwriteAppData(createdUser.id, [
+          {
+            entity_type: "profile",
+            entity_id: createdUser.id,
+            payload: metadata,
+          },
+        ]);
+        const cloudDb = await loadCloudDb(createdUser);
+        save((d) => ({
+          ...d,
+          accessCodes: d.accessCodes.map((x) =>
+            x.id === access.id
+              ? {
+                  ...x,
+                  status: "used",
+                  usedBy: email,
+                  usedAt: new Date().toISOString(),
+                }
+              : x,
+          ),
+        }));
+        login(cloudDb.users[0]);
+      } catch (error) {
+        setErr(error.message);
+      }
+      return;
+    }
+
     if (mode === "login") {
       const u = db.users.find(
         (x) => x.email === email && x.password === password,
@@ -4438,16 +4686,16 @@ function Settings({ db, save, user, logout, setToast, onPlanChanged }) {
     [billingBusy, setBillingBusy] = useState(false),
     [billingError, setBillingError] = useState("");
   useEffect(() => {
-    fetch("/api/stripe/config")
+    fetch(apiUrl("/api/stripe/config"))
       .then((response) => response.json())
       .then(setBilling)
-      .catch(() => setBilling({ configured: false, priceLabel: "Server unavailable" }));
+      .catch(() => setBilling({ configured: Boolean(STRIPE_PAYMENT_LINK), priceLabel: STRIPE_PAYMENT_LINK ? "Stripe test checkout" : "Server unavailable" }));
   }, []);
   const startCardCheckout = async () => {
     setBillingBusy(true);
     setBillingError("");
     try {
-      const response = await fetch("/api/stripe/create-checkout-session", {
+      const response = await fetch(apiUrl("/api/stripe/create-checkout-session"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ userId: user.id, email: user.email }),
@@ -4456,7 +4704,14 @@ function Settings({ db, save, user, logout, setToast, onPlanChanged }) {
       if (!response.ok) throw new Error(result.error || "Checkout could not start.");
       window.location.assign(result.url);
     } catch (error) {
-      setBillingError(error.message);
+      if (STRIPE_PAYMENT_LINK) {
+        const checkout = new URL(STRIPE_PAYMENT_LINK);
+        checkout.searchParams.set("prefilled_email", user.email);
+        checkout.searchParams.set("client_reference_id", user.id);
+        window.location.assign(checkout.toString());
+        return;
+      }
+      setBillingError(`${error.message} Contact the administrator or try again later.`);
       setBillingBusy(false);
     }
   };
@@ -4593,7 +4848,7 @@ function Settings({ db, save, user, logout, setToast, onPlanChanged }) {
                   {billingBusy ? "Opening checkout…" : "Pay securely by card"}
                 </button>
               </div>
-              {!billing.configured && <p className="billing-note"><Icon name="Info" /> Card checkout is in setup mode. Add the Stripe server keys to enable it.</p>}
+              {!billing.configured && <p className="billing-note"><Icon name="Info" /> Card checkout is temporarily unavailable. You can still use an administrator cash code.</p>}
               <div className="billing-divider"><span>or pay cash</span></div>
               <form className="cash-code-form" onSubmit={redeemCashCode}>
                 <label htmlFor="cash-code">Administrator activation code</label>

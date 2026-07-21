@@ -1,14 +1,21 @@
 import "dotenv/config";
 import express from "express";
 import Stripe from "stripe";
+import cors from "cors";
 
 const app = express();
 const port = Number(process.env.PAYMENTS_PORT || 4242);
 const appUrl = process.env.APP_URL || "http://localhost:5173";
 const stripeSecret = process.env.STRIPE_SECRET_KEY;
 const stripePrice = process.env.STRIPE_PRO_PRICE_ID;
+const checkoutMode = process.env.STRIPE_CHECKOUT_MODE === "payment" ? "payment" : "subscription";
 const stripe = stripeSecret ? new Stripe(stripeSecret) : null;
 const configured = () => Boolean(stripe && stripePrice);
+
+app.use(cors({
+  origin: [appUrl, "http://localhost:5173", "capacitor://localhost", "http://localhost"],
+  methods: ["GET", "POST"],
+}));
 
 app.post("/api/stripe/webhook", express.raw({ type: "application/json" }), async (req, res) => {
   if (!stripe || !process.env.STRIPE_WEBHOOK_SECRET)
@@ -37,7 +44,7 @@ app.post("/api/stripe/create-checkout-session", async (req, res) => {
   if (!userId || !email) return res.status(400).json({ error: "A signed-in user is required." });
   try {
     const session = await stripe.checkout.sessions.create({
-      mode: "subscription",
+      mode: checkoutMode,
       line_items: [{ price: stripePrice, quantity: 1 }],
       customer_email: String(email).trim().toLowerCase(),
       client_reference_id: String(userId),

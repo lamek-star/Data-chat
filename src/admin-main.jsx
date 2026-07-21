@@ -18,7 +18,49 @@ import {
 import "./styles.css";
 
 const KEY = "datachat-v1";
-const read = () => JSON.parse(localStorage.getItem(KEY) || "{}");
+const sampleAdmin = {
+  id: "admin",
+  name: "DataChat Administrator",
+  email: "admin@datachat.app",
+  password: "admin123",
+  plan: "Admin",
+  role: "admin",
+  status: "active",
+};
+const emptyAdminDb = {
+  users: [sampleAdmin],
+  accessCodes: [],
+  communities: [],
+  recoveryBackups: [],
+  adminConfig: {
+    repositoryUrl: "https://github.com/lamek-star/Data-chat",
+    paymentUrl: import.meta.env.VITE_STRIPE_PAYMENT_LINK || "",
+    supportEmail: "support@datachat.app",
+  },
+};
+const read = () => {
+  try {
+    const saved = JSON.parse(localStorage.getItem(KEY) || "null");
+    if (!saved) return emptyAdminDb;
+    const users = Array.isArray(saved.users) ? saved.users : [];
+    return {
+      ...emptyAdminDb,
+      ...saved,
+      users: users.some((user) => user.role === "admin")
+        ? users
+        : [...users, sampleAdmin],
+      accessCodes: saved.accessCodes || [],
+      communities: saved.communities || [],
+      recoveryBackups: saved.recoveryBackups || [],
+      adminConfig: {
+        ...emptyAdminDb.adminConfig,
+        ...(saved.adminConfig || {}),
+      },
+    };
+  } catch {
+    return emptyAdminDb;
+  }
+};
 const makeCode = () => {
   const bytes = crypto.getRandomValues(new Uint8Array(6));
   const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
