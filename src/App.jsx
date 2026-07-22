@@ -933,7 +933,7 @@ function Auth({ db, save, login }) {
   const submit = async (e) => {
     e.preventDefault();
     const f = new FormData(e.currentTarget);
-    const email = f.get("email").trim().toLowerCase();
+    const email = (otpStep?.email || f.get("email")).trim().toLowerCase();
     if (cloudConfigured) {
       try {
         setBusy(true);
@@ -957,7 +957,11 @@ function Auth({ db, save, login }) {
           createdAt: new Date().toISOString(),
         } : {};
         await requestEmailOtp(email, metadata, mode === "register");
-        setOtpStep({ email, mode, metadata });
+        setOtpStep({
+          email,
+          mode,
+          metadata,
+        });
         setResendIn(60);
         setErr("");
       } catch (error) {
@@ -1125,8 +1129,8 @@ function Auth({ db, save, login }) {
           {cloudConfigured ? (
             otpStep && <div className="otp-field-group"><label>
               Email confirmation code
-              <input name="otp" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6,8}" minLength="6" maxLength="8" required autoFocus placeholder="Enter 6–8 digits" />
-              <small>Enter the complete code sent to {otpStep.email}.</small>
+              <input name="otp" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{8}" minLength="8" maxLength="8" required autoFocus placeholder="Enter 8 digits" />
+              <small>Enter the eight-digit code sent to {otpStep.email}.</small>
             </label><button type="button" className="secondary resend-otp" disabled={resendIn > 0 || busy} onClick={resendOtp}><Icon name="RefreshCw" />{resendIn > 0 ? `Resend code in ${resendIn}s` : "Resend code"}</button></div>
           ) : (
             <label>

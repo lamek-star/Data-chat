@@ -92,6 +92,12 @@ function AdminApp() {
     [toast, setToast] = useState("");
   const adminAccount = (db.users || []).find((user) => user.role === "admin");
   const needsAdminSetup = !adminAccount?.credential?.hash;
+  const accessCodeUserName = (accessCode) =>
+    accessCode.usedByName ||
+    (db.users || []).find(
+      (user) => user.id === accessCode.usedById || user.email === accessCode.usedBy,
+    )?.name ||
+    "Unknown user";
   useEffect(() => {
     if (loggedIn) localStorage.setItem(KEY, JSON.stringify(db));
   }, [db, loggedIn]);
@@ -542,7 +548,7 @@ function AdminApp() {
           <div className="panel-title">
             <div>
               <h2>Access codes</h2>
-              <p>Strong one-time codes with the username of the member who redeemed them.</p>
+              <p>Pro subscription codes. Used codes identify the member who redeemed them.</p>
             </div>
           </div>
           <div className="code-list">
@@ -550,7 +556,7 @@ function AdminApp() {
               <div key={x.id}>
                 <code>{x.code}</code>
                 <span className="badge completed">{x.status}</span>
-                <b>{x.status === "used" ? (x.usedByName || db.users.find((user) => user.id === x.usedById || user.email === x.usedBy)?.name || "Unknown user") : "Not yet assigned"}</b>
+                <b>{x.status === "used" ? accessCodeUserName(x) : "Not yet used"}</b>
                 <small>{x.status === "used" ? (x.usedBy || "Account unavailable") : x.createdAt?.slice(0, 10)}</small>
                 <button
                   className="icon-btn"
