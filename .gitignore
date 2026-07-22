@@ -7,5 +7,10 @@ dist/
 android/.gradle/
 android/local.properties
 android/app/build/
+android/keystore.properties
+android/*.jks
+android/*.keystore
+release/
+public/assets/*-source.png
 ios/App/Pods/
 ios/App/App/public/

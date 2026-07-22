@@ -44,6 +44,27 @@ export async function signUp(email, password, userMetadata = {}) {
   return data;
 }
 
+export async function requestEmailOtp(email, userMetadata = {}, createUser = true) {
+  const client = requireSupabase();
+  const { data, error } = await client.auth.signInWithOtp({
+    email,
+    options: { shouldCreateUser: createUser, data: userMetadata },
+  });
+  if (error) throw error;
+  return data;
+}
+
+export async function verifyEmailOtp(email, token) {
+  const client = requireSupabase();
+  const { data, error } = await client.auth.verifyOtp({
+    email,
+    token: String(token || "").replace(/\D/g, ""),
+    type: "email",
+  });
+  if (error) throw error;
+  return data;
+}
+
 export async function signOut() {
   const supabase = requireSupabase();
   const { error } = await supabase.auth.signOut();
@@ -128,6 +149,8 @@ export async function upsertPublicProfile(user) {
       user.user_metadata?.name || user.email?.split("@")[0] || "DataChat member",
     contact_code: String(user.id).replaceAll("-", "").slice(0, 12).toUpperCase(),
     country: user.user_metadata?.country || "Global",
+    phone: user.user_metadata?.phone || "",
+    avatar_url: user.user_metadata?.avatar_url || null,
     updated_at: new Date().toISOString(),
   };
   const { data, error } = await client
@@ -143,7 +166,7 @@ export async function findPublicProfile({ userId, contactCode }) {
   const client = requireSupabase();
   let query = client
     .from("profiles")
-    .select("id, display_name, contact_code, country");
+    .select("id, display_name, contact_code, country, phone, avatar_url");
   query = userId
     ? query.eq("id", userId)
     : query.eq("contact_code", String(contactCode || "").trim().toUpperCase());
@@ -168,10 +191,31 @@ export async function loadPublicProfiles(userIds) {
   const client = requireSupabase();
   const { data, error } = await client
     .from("profiles")
-    .select("id, display_name, contact_code, country")
+    .select("id, display_name, contact_code, country, phone, avatar_url")
     .in("id", [...new Set(userIds)]);
   if (error) throw error;
   return data || [];
+}
+
+export async function uploadProfilePhoto(userId, file) {
+  const client = requireSupabase();
+  const extension = (file.name?.split(".").pop() || "jpg").toLowerCase();
+  const path = `${userId}/avatar.${extension}`;
+  const { error } = await client.storage.from("profile-images").upload(path, file, {
+    upsert: true,
+    contentType: file.type,
+    cacheControl: "3600",
+  });
+  if (error) throw error;
+  const { data } = client.storage.from("profile-images").getPublicUrl(path);
+  const avatarUrl = `${data.publicUrl}?v=${Date.now()}`;
+  const { error: profileError } = await client
+    .from("profiles")
+    .update({ avatar_url: avatarUrl, updated_at: new Date().toISOString() })
+    .eq("id", userId);
+  if (profileError) throw profileError;
+  await client.auth.updateUser({ data: { avatar_url: avatarUrl } });
+  return avatarUrl;
 }
 
 export async function sendDirectMessage(recipientId, message) {

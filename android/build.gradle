@@ -24,6 +24,13 @@ allprojects {
     }
 }
 
+// Keep generated Android outputs outside OneDrive to avoid file-lock failures.
+def dataChatBuildRoot = new File(System.getProperty("java.io.tmpdir"), "datachat-android-build")
+rootProject.buildDir = new File(dataChatBuildRoot, "root")
+subprojects { project ->
+    project.buildDir = new File(dataChatBuildRoot, project.name)
+}
+
 task clean(type: Delete) {
     delete rootProject.buildDir
 }

@@ -1,5 +1,11 @@
 apply plugin: 'com.android.application'
 
+def uploadKeyPropertiesFile = rootProject.file('keystore.properties')
+def uploadKeyProperties = new Properties()
+if (uploadKeyPropertiesFile.exists()) {
+    uploadKeyProperties.load(new FileInputStream(uploadKeyPropertiesFile))
+}
+
 android {
     namespace = "com.lamekstar.datachat"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -16,9 +22,22 @@ android {
             ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    signingConfigs {
+        if (uploadKeyPropertiesFile.exists()) {
+            release {
+                storeFile rootProject.file(uploadKeyProperties['storeFile'])
+                storePassword uploadKeyProperties['storePassword']
+                keyAlias uploadKeyProperties['keyAlias']
+                keyPassword uploadKeyProperties['keyPassword']
+            }
+        }
+    }
     buildTypes {
         release {
             minifyEnabled false
+            if (uploadKeyPropertiesFile.exists()) {
+                signingConfig signingConfigs.release
+            }
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
     }

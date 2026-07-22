@@ -21,12 +21,27 @@ const KEY = "datachat-v1";
 const sampleAdmin = {
   id: "admin",
   name: "DataChat Administrator",
-  email: "admin@datachat.app",
-  password: "admin123",
+  username: "datachat-harmony",
   plan: "Admin",
   role: "admin",
   status: "active",
 };
+const ADMIN_USERNAME = "datachat-harmony";
+const encodeBytes = (bytes) => btoa(String.fromCharCode(...bytes));
+const decodeBytes = (value) => Uint8Array.from(atob(value), (char) => char.charCodeAt(0));
+async function deriveAdminHash(password, salt) {
+  const material = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt, iterations: 310000 }, material, 256);
+  return encodeBytes(new Uint8Array(bits));
+}
+async function createAdminCredential(password) {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  return { salt: encodeBytes(salt), hash: await deriveAdminHash(password, salt), iterations: 310000 };
+}
+async function verifyAdminCredential(password, credential) {
+  if (!credential?.salt || !credential?.hash) return false;
+  return (await deriveAdminHash(password, decodeBytes(credential.salt))) === credential.hash;
+}
 const emptyAdminDb = {
   users: [sampleAdmin],
   accessCodes: [],
@@ -62,10 +77,10 @@ const read = () => {
   }
 };
 const makeCode = () => {
-  const bytes = crypto.getRandomValues(new Uint8Array(6));
+  const bytes = crypto.getRandomValues(new Uint8Array(20));
   const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   const raw = Array.from(bytes, (x) => alphabet[x % alphabet.length]).join("");
-  return `DC-${raw.slice(0, 3)}-${raw.slice(3)}`;
+  return `DCP-${raw.slice(0, 5)}-${raw.slice(5, 10)}-${raw.slice(10, 15)}-${raw.slice(15, 20)}`;
 };
 function AdminApp() {
   const [db, setDb] = useState(read),
@@ -73,7 +88,10 @@ function AdminApp() {
       sessionStorage.getItem("dc-admin") === "true",
     ),
     [error, setError] = useState(""),
+    [showPassword, setShowPassword] = useState(false),
     [toast, setToast] = useState("");
+  const adminAccount = (db.users || []).find((user) => user.role === "admin");
+  const needsAdminSetup = !adminAccount?.credential?.hash;
   useEffect(() => {
     if (loggedIn) localStorage.setItem(KEY, JSON.stringify(db));
   }, [db, loggedIn]);
@@ -83,19 +101,35 @@ function AdminApp() {
       return () => clearTimeout(t);
     }
   }, [toast]);
-  const login = (e) => {
+  const login = async (e) => {
     e.preventDefault();
     const f = Object.fromEntries(new FormData(e.currentTarget));
-    const admin = (db.users || []).find(
-      (x) =>
-        x.role === "admin" &&
-        x.email === f.email.trim().toLowerCase() &&
-        x.password === f.password,
-    );
-    if (!admin) return setError("Administrator credentials are incorrect.");
+    const valid = f.username.trim().toLowerCase() === ADMIN_USERNAME && await verifyAdminCredential(f.password, adminAccount?.credential);
+    if (!valid) return setError("Administrator credentials are incorrect.");
     sessionStorage.setItem("dc-admin", "true");
     setLoggedIn(true);
   };
+  const setupAdmin = async (event) => {
+    event.preventDefault();
+    setError("");
+    const form = Object.fromEntries(new FormData(event.currentTarget));
+    if (form.password.length < 12) return setError("Use at least 12 characters for the administrator password.");
+    if (form.password !== form.confirmPassword) return setError("The passwords do not match.");
+    const credential = await createAdminCredential(form.password);
+    setDb((current) => ({ ...current, users: current.users.map((account) => account.role === "admin" ? { ...account, username: ADMIN_USERNAME, credential, password: undefined, email: undefined } : account) }));
+    sessionStorage.setItem("dc-admin", "true");
+    setLoggedIn(true);
+  };
+  if (!loggedIn && needsAdminSetup)
+    return (
+      <main className="admin-login"><form className="auth-card" onSubmit={setupAdmin}>
+        <span className="admin-mark"><ShieldCheck /></span><p className="eyebrow">FIRST-TIME ADMIN SETUP</p><h1>Secure your admin portal</h1><p>Create the private password for the fixed DataChat administrator username.</p>
+        <label>Administrator username<input name="username" value={ADMIN_USERNAME} readOnly autoComplete="username" /></label>
+        <label>New password<span className="password-field"><input type={showPassword ? "text" : "password"} name="password" required minLength="12" autoComplete="new-password" /><button type="button" aria-label={showPassword ? "Hide password" : "Show password"} onClick={() => setShowPassword((value) => !value)}>{showPassword ? "Hide" : "Show"}</button></span><small>At least 12 characters. It is stored as a PBKDF2-SHA256 hash.</small></label>
+        <label>Confirm password<input type={showPassword ? "text" : "password"} name="confirmPassword" required minLength="12" autoComplete="new-password" /></label>
+        {error && <div className="error">{error}</div>}<button className="primary">Save password and open admin</button><a className="secondary admin-back" href="/">Return to user app</a>
+      </form></main>
+    );
   if (!loggedIn)
     return (
       <main className="admin-login">
@@ -110,17 +144,12 @@ function AdminApp() {
             metadata only.
           </p>
           <label>
-            Email
-            <input type="email" name="email" required autoComplete="username" />
+            Administrator username
+            <input name="username" required value={ADMIN_USERNAME} readOnly autoComplete="username" />
           </label>
           <label>
             Password
-            <input
-              type="password"
-              name="password"
-              required
-              autoComplete="current-password"
-            />
+            <span className="password-field"><input type={showPassword ? "text" : "password"} name="password" required autoComplete="current-password" /><button type="button" aria-label={showPassword ? "Hide password" : "Show password"} onClick={() => setShowPassword((value) => !value)}>{showPassword ? "Hide" : "Show"}</button></span>
           </label>
           {error && <div className="error">{error}</div>}
           <button className="primary">Sign in</button>
@@ -513,7 +542,7 @@ function AdminApp() {
           <div className="panel-title">
             <div>
               <h2>Access codes</h2>
-              <p>One-time codes for cash payment or invitation.</p>
+              <p>Strong one-time codes used only to activate DataChat Pro.</p>
             </div>
           </div>
           <div className="code-list">
@@ -522,7 +551,7 @@ function AdminApp() {
                 <code>{x.code}</code>
                 <span className="badge completed">{x.status}</span>
                 <b>{x.plan}</b>
-                <small>{x.usedBy || x.createdAt?.slice(0, 10)}</small>
+                <small>{x.status === "used" ? `${x.usedByName || "User"} · ${x.usedBy || "account unavailable"}` : x.createdAt?.slice(0, 10)}</small>
                 <button
                   className="icon-btn"
                   onClick={() => {

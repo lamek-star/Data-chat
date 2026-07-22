@@ -14,6 +14,8 @@ import {
   onAuthStateChange,
   signIn as cloudSignIn,
   signUp as cloudSignUp,
+  requestEmailOtp,
+  verifyEmailOtp,
   signOut as cloudSignOut,
   loadAppData,
   overwriteAppData,
@@ -24,6 +26,7 @@ import {
   sendDirectMessage,
   subscribeToDirectMessages,
   unsubscribeChannel,
+  uploadProfilePhoto,
 } from "./cloud/supabaseClient";
 import * as I from "lucide-react";
 import QRCode from "qrcode";
@@ -295,6 +298,7 @@ const buildCloudDb = (rows, userId, profile = {}) => {
     email: profileRow?.payload?.email || profile?.email,
   };
   const currentUser = {
+    ...profileData,
     id: userId,
     name: profileData.name || "",
     email: profileData.email || "",
@@ -349,6 +353,8 @@ async function loadCloudDb(authUser) {
     ...cloudDb.users[0],
     contactCode: publicProfile.contact_code,
     country: publicProfile.country,
+    phone: publicProfile.phone || cloudDb.users[0].phone,
+    profilePhoto: publicProfile.avatar_url || cloudDb.users[0].profilePhoto,
   };
   const peerIds = remoteMessages.map((message) =>
     message.sender_id === authUser.id ? message.recipient_id : message.sender_id,
@@ -370,7 +376,8 @@ async function loadCloudDb(authUser) {
       contactCode: profile.contact_code,
       owner: authUser.id,
       name: profile.display_name,
-      phone: `ID ${profile.contact_code}`,
+      phone: profile.phone || `ID ${profile.contact_code}`,
+      profilePhoto: profile.avatar_url || null,
       country: profile.country || "Global",
       color: "#4c8ed9",
       isOnline: true,
@@ -421,6 +428,8 @@ const serializeCloudRows = (dbState, userId) => {
         plan: currentUser.plan,
         role: currentUser.role,
         status: currentUser.status,
+        phone: currentUser.phone || "",
+        profilePhoto: currentUser.profilePhoto || null,
         createdAt: currentUser.createdAt || new Date().toISOString(),
       },
     },
@@ -867,6 +876,9 @@ function LegacyAuth({ db, save, login }) {
 function Auth({ db, save, login }) {
   const [mode, setMode] = useState("login");
   const [err, setErr] = useState("");
+  const [otpStep, setOtpStep] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
   const [slide, setSlide] = useState(0);
   const [agreementOpen, setAgreementOpen] = useState(false);
   const slides = [
@@ -903,76 +915,40 @@ function Auth({ db, save, login }) {
     e.preventDefault();
     const f = new FormData(e.currentTarget);
     const email = f.get("email").trim().toLowerCase();
-    const password = f.get("password");
     if (cloudConfigured) {
-      if (mode === "login") {
-        try {
-          const result = await cloudSignIn(email, password);
-          if (!result?.user) throw new Error("Unable to sign in.");
+      try {
+        setBusy(true);
+        setErr("");
+        if (otpStep) {
+          const result = await verifyEmailOtp(email, f.get("otp"));
+          if (!result?.user) throw new Error("The confirmation code is invalid or expired.");
           const cloudDb = await loadCloudDb(result.user);
           login(cloudDb.users[0]);
-        } catch (error) {
-          setErr(error.message);
+          return;
         }
-        return;
-      }
-
-      if (db.users.some((x) => x.email === email))
-        return setErr("An account already exists for this email.");
-      const enteredCode = f.get("accessCode").trim().toUpperCase();
-      const access = (db.accessCodes || []).find(
-        (x) => x.code === enteredCode && x.status === "available",
-      );
-      if (!access)
-        return setErr("A valid unused administrator access code is required.");
-      if (f.get("agreement") !== "on")
-        return setErr("You must accept the User Access & Privacy Agreement.");
-      const metadata = {
-        name: f.get("name"),
-        email,
-        plan: access.plan || "Free",
-        role: "user",
-        status: "active",
-        createdAt: new Date().toISOString(),
-      };
-      try {
-        const result = await cloudSignUp(email, password, metadata);
-        const createdUser = result.user;
-        if (!createdUser)
-          return setErr(
-            "Check your email to confirm registration before signing in.",
-          );
-        if (!result.session)
-          return setErr(
-            "Registration received. Check your email, confirm the account, then sign in.",
-          );
-        await overwriteAppData(createdUser.id, [
-          {
-            entity_type: "profile",
-            entity_id: createdUser.id,
-            payload: metadata,
-          },
-        ]);
-        const cloudDb = await loadCloudDb(createdUser);
-        save((d) => ({
-          ...d,
-          accessCodes: d.accessCodes.map((x) =>
-            x.id === access.id
-              ? {
-                  ...x,
-                  status: "used",
-                  usedBy: email,
-                  usedAt: new Date().toISOString(),
-                }
-              : x,
-          ),
-        }));
-        login(cloudDb.users[0]);
+        if (mode === "register" && f.get("agreement") !== "on")
+          throw new Error("You must accept the User Access & Privacy Agreement.");
+        const metadata = mode === "register" ? {
+          name: f.get("name").trim(),
+          phone: f.get("phone").trim(),
+          email,
+          plan: "Free",
+          role: "user",
+          status: "active",
+          createdAt: new Date().toISOString(),
+        } : {};
+        await requestEmailOtp(email, metadata, mode === "register");
+        setOtpStep({ email, mode });
+        setErr("");
       } catch (error) {
         setErr(error.message);
+      } finally {
+        setBusy(false);
       }
       return;
     }
+
+    const password = f.get("password");
 
     if (mode === "login") {
       const u = db.users.find(
@@ -999,6 +975,7 @@ function Auth({ db, save, login }) {
         id: uid("user"),
         name: f.get("name"),
         email,
+        phone: f.get("phone"),
         password,
         plan: access.plan || "Free",
         role: "user",
@@ -1034,7 +1011,7 @@ function Auth({ db, save, login }) {
         <div className="welcome-top">
           <div className="brand">
             <div className="logo">
-              <Icon name="MessagesSquare" />
+              <img src="/assets/datachat-logo.png" alt="DataChat" />
             </div>
             <b>DataChat</b>
           </div>
@@ -1098,17 +1075,8 @@ function Auth({ db, save, login }) {
                 <input name="name" required placeholder="Your full name" />
               </label>
               <label>
-                Administrator access code
-                <input
-                  name="accessCode"
-                  required
-                  autoCapitalize="characters"
-                  placeholder="Enter cash or invitation code"
-                />
-                <small>
-                  Use the one-time code issued after cash payment or by an
-                  administrator.
-                </small>
+                Phone number
+                <input name="phone" type="tel" required autoComplete="tel" placeholder="+971 50 123 4567" />
               </label>
             </>
           )}
@@ -1134,20 +1102,21 @@ function Auth({ db, save, login }) {
               </span>
             </label>
           )}
-          <label>
-            Password
-            <input
-              name="password"
-              type="password"
-              required
-              minLength="6"
-              defaultValue={mode === "login" ? "demo123" : ""}
-              placeholder="At least 6 characters"
-            />
-          </label>
+          {cloudConfigured ? (
+            otpStep && <label>
+              Six-digit email confirmation code
+              <input name="otp" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength="6" required autoFocus placeholder="000000" />
+              <small>We sent this one-time code to {otpStep.email}.</small>
+            </label>
+          ) : (
+            <label>
+              Password
+              <span className="password-field"><input name="password" type={showPassword ? "text" : "password"} required minLength="6" defaultValue={mode === "login" ? "demo123" : ""} placeholder="At least 6 characters" /><button type="button" aria-label={showPassword ? "Hide password" : "Show password"} onClick={() => setShowPassword((value) => !value)}><Icon name={showPassword ? "EyeOff" : "Eye"} /></button></span>
+            </label>
+          )}
           {err && <div className="error">{err}</div>}
-          <button className="primary" type="submit">
-            {mode === "login" ? "Sign in securely" : "Create account"}
+          <button className="primary" type="submit" disabled={busy}>
+            {busy ? "Please wait…" : otpStep ? "Confirm and continue" : mode === "login" ? "Email me a login code" : "Create free account"}
             <Icon name="ArrowRight" />
           </button>
           <button
@@ -1155,6 +1124,7 @@ function Auth({ db, save, login }) {
             className="link"
             onClick={() => {
               setMode(mode === "login" ? "register" : "login");
+              setOtpStep(null);
               setErr("");
             }}
           >
@@ -1169,7 +1139,7 @@ function Auth({ db, save, login }) {
               Free demo: free@datachat.app / free123
             </div>
           )}
-          {mode === "register" && db.adminConfig?.paymentUrl && (
+          {mode === "register" && db.adminConfig?.paymentUrl && false && (
             <a
               className="payment-link"
               href={db.adminConfig.paymentUrl}
@@ -1342,7 +1312,7 @@ function Sidebar({ page, setPage, user }) {
     <aside>
       <div className="brand">
         <div className="logo">
-          <Icon name="MessagesSquare" />
+          <img src="/assets/datachat-logo.png" alt="DataChat" />
         </div>
         <b>DataChat</b>
       </div>
@@ -2249,11 +2219,19 @@ function CommunityManager({ db, save, user, setToast }) {
       ...d,
       communities: d.communities.map((x) =>
         x.id === group.id
-          ? { ...x, members: [...new Set([...(x.members || []), user.id])] }
+          ? { ...x, joinRequests: [...(x.joinRequests || []).filter((request) => request.userId !== user.id), { userId: user.id, name: user.name, email: user.email, status: "pending", requestedAt: new Date().toISOString() }] }
           : x,
       ),
     }));
-    setToast(`Joined ${group.name}`);
+    setToast(`Join request sent to the owner of ${group.name}`);
+  };
+  const decideJoin = (groupId, requesterId, approved) => {
+    save((d) => ({ ...d, communities: d.communities.map((x) => x.id !== groupId ? x : ({
+      ...x,
+      members: approved ? [...new Set([...(x.members || []), requesterId])] : (x.members || []),
+      joinRequests: (x.joinRequests || []).map((request) => request.userId === requesterId ? { ...request, status: approved ? "approved" : "declined", decidedAt: new Date().toISOString() } : request),
+    })) }));
+    setToast(approved ? "Join request approved" : "Join request declined");
   };
   const saveMembers = (e) => {
     e.preventDefault();
@@ -2298,6 +2276,7 @@ function CommunityManager({ db, save, user, setToast }) {
         {communities.map((group) => {
           const parent = communities.find((x) => x.id === group.parentId);
           const isMember = (group.members || []).includes(user.id);
+          const pendingRequest = (group.joinRequests || []).some((request) => request.userId === user.id && request.status === "pending");
           const canManage =
             (group.admins || []).includes(user.id) ||
             group.createdBy === user.id;
@@ -2346,8 +2325,8 @@ function CommunityManager({ db, save, user, setToast }) {
               </div>
               <div className="community-actions">
                 {!isMember && (
-                  <button className="secondary" onClick={() => join(group)}>
-                    Join community
+                  <button className="secondary" disabled={pendingRequest} onClick={() => join(group)}>
+                    {pendingRequest ? "Approval pending" : "Request to join"}
                   </button>
                 )}
                 {canManage && group.permissions?.allowInvites && (
@@ -2360,6 +2339,14 @@ function CommunityManager({ db, save, user, setToast }) {
                   </button>
                 )}
               </div>
+              {canManage && (group.joinRequests || []).some((request) => request.status === "pending") && (
+                <div className="join-request-list">
+                  <b>Join requests</b>
+                  {(group.joinRequests || []).filter((request) => request.status === "pending").map((request) => (
+                    <div key={request.userId}><span>{request.name}<small>{request.email}</small></span><button className="secondary" onClick={() => decideJoin(group.id, request.userId, true)}>Approve</button><button className="icon-btn danger" aria-label={`Decline ${request.name}`} onClick={() => decideJoin(group.id, request.userId, false)}><Icon name="X" /></button></div>
+                  ))}
+                </div>
+              )}
             </article>
           );
         })}
@@ -2471,6 +2458,9 @@ function Home({ db, save, user, setToast, setPage }) {
     [report, setReport] = useState(null),
     [attachments, setAttachments] = useState(false);
   const messagesRef = useRef(null);
+  const recorderRef = useRef(null);
+  const recordingChunksRef = useRef([]);
+  const [recording, setRecording] = useState(false);
   const c = contacts.find((x) => x.id === selected),
     msgs = db.messages.filter(
       (x) => x.owner === user.id && x.contact === selected,
@@ -2536,6 +2526,33 @@ function Home({ db, save, user, setToast, setPage }) {
     }));
     setAttachments(false);
     setToast(`Transaction ${record.id} sent to ${c.name}`);
+  };
+  const toggleVoiceRecording = async () => {
+    if (user.plan !== "Pro") return setToast("Voice messages are available with DataChat Pro");
+    if (!c || c.blocked) return;
+    if (recording) return recorderRef.current?.stop();
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream, { mimeType: MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : undefined });
+      recordingChunksRef.current = [];
+      recorder.ondataavailable = (event) => event.data.size && recordingChunksRef.current.push(event.data);
+      recorder.onstop = async () => {
+        setRecording(false);
+        stream.getTracks().forEach((track) => track.stop());
+        const blob = new Blob(recordingChunksRef.current, { type: recorder.mimeType || "audio/webm" });
+        if (!blob.size) return;
+        if (blob.size > 900000) return setToast("Voice message is too long. Keep recordings under about one minute.");
+        const voiceUrl = await new Promise((resolve) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.readAsDataURL(blob); });
+        const message = { id: c.remoteUserId ? crypto.randomUUID() : uid("m"), owner: user.id, contact: c.id, sender: "me", content: "Voice message", voiceUrl, voiceType: blob.type, time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) };
+        try {
+          if (c.remoteUserId) await sendDirectMessage(c.remoteUserId, message);
+          save((d) => ({ ...d, messages: [...d.messages, message] }));
+        } catch (error) { setToast(`Voice message not sent: ${error.message}`); }
+      };
+      recorder.start(250);
+      recorderRef.current = recorder;
+      setRecording(true);
+    } catch (error) { setToast(`Microphone unavailable: ${error.message}`); }
   };
   useEffect(() => {
     messagesRef.current?.scrollTo({
@@ -2627,9 +2644,7 @@ function Home({ db, save, user, setToast, setPage }) {
               >
                 <Icon name="ArrowLeft" />
               </button>
-              <div className="avatar" style={{ background: c.color }}>
-                {c.name[0]}
-              </div>
+              <UserAvatar person={c} />
               <div>
                 <b>{c.name}</b>
                 <small>
@@ -2659,7 +2674,7 @@ function Home({ db, save, user, setToast, setPage }) {
                   />
                 ) : (
                   <div key={m.id} className={"bubble " + m.sender}>
-                    {m.content}
+                    {m.voiceUrl ? <audio className="voice-message" controls preload="metadata" src={m.voiceUrl}>Voice message</audio> : m.content}
                     <small>{m.time}</small>
                   </div>
                 ),
@@ -2715,6 +2730,9 @@ function Home({ db, save, user, setToast, setPage }) {
               />
               <button className="send" aria-label="Send" disabled={c.blocked}>
                 <Icon name="Send" />
+              </button>
+              <button type="button" className={`icon-btn voice-button ${recording ? "recording" : ""}`} onClick={toggleVoiceRecording} aria-label={recording ? "Stop voice recording" : "Record voice message"} title={user.plan === "Pro" ? "Voice message" : "Voice messages require Pro"}>
+                <Icon name={recording ? "Square" : "Mic"} />
               </button>
             </form>
           </>
@@ -4973,19 +4991,18 @@ function Settings({ db, save, user, logout, setToast, onPlanChanged }) {
     save((d) => ({
       ...d,
       users: d.users.map((x) => x.id === user.id ? { ...x, plan: "Pro", cashCodeId: match.id } : x),
-      accessCodes: (d.accessCodes || []).map((x) => x.id === match.id ? { ...x, status: "used", usedBy: user.email, usedAt: now } : x),
+      accessCodes: (d.accessCodes || []).map((x) => x.id === match.id ? { ...x, status: "used", usedBy: user.email, usedByName: user.name, usedById: user.id, usedAt: now } : x),
     }));
     onPlanChanged({ plan: "Pro", cashCodeId: match.id });
     event.currentTarget.reset();
     setToast("Cash code accepted. DataChat Pro is now active.");
   };
-  const choosePhoto = (file) => {
+  const choosePhoto = async (file) => {
     if (!file) return;
     if (!file.type.startsWith("image/") || file.size > 2 * 1024 * 1024)
       return setToast("Choose a JPG, PNG or WebP image under 2 MB");
-    const reader = new FileReader();
-    reader.onload = () => {
-      const profilePhoto = reader.result;
+    try {
+      const profilePhoto = cloudConfigured ? await uploadProfilePhoto(user.id, file) : await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = reject; reader.readAsDataURL(file); });
       save((d) => ({
         ...d,
         users: d.users.map((x) =>
@@ -4993,8 +5010,9 @@ function Settings({ db, save, user, logout, setToast, onPlanChanged }) {
         ),
       }));
       setToast("Profile picture updated");
-    };
-    reader.readAsDataURL(file);
+    } catch (error) {
+      setToast(`Profile picture failed: ${error.message}`);
+    }
   };
   return (
     <div className="page settings">
