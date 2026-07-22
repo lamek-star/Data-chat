@@ -542,7 +542,7 @@ function AdminApp() {
           <div className="panel-title">
             <div>
               <h2>Access codes</h2>
-              <p>Strong one-time codes used only to activate DataChat Pro.</p>
+              <p>Strong one-time codes with the username of the member who redeemed them.</p>
             </div>
           </div>
           <div className="code-list">
@@ -550,8 +550,8 @@ function AdminApp() {
               <div key={x.id}>
                 <code>{x.code}</code>
                 <span className="badge completed">{x.status}</span>
-                <b>{x.plan}</b>
-                <small>{x.status === "used" ? `${x.usedByName || "User"} · ${x.usedBy || "account unavailable"}` : x.createdAt?.slice(0, 10)}</small>
+                <b>{x.status === "used" ? (x.usedByName || db.users.find((user) => user.id === x.usedById || user.email === x.usedBy)?.name || "Unknown user") : "Not yet assigned"}</b>
+                <small>{x.status === "used" ? (x.usedBy || "Account unavailable") : x.createdAt?.slice(0, 10)}</small>
                 <button
                   className="icon-btn"
                   onClick={() => {

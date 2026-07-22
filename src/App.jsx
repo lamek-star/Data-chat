@@ -877,6 +877,7 @@ function Auth({ db, save, login }) {
   const [mode, setMode] = useState("login");
   const [err, setErr] = useState("");
   const [otpStep, setOtpStep] = useState(null);
+  const [resendIn, setResendIn] = useState(0);
   const [busy, setBusy] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [slide, setSlide] = useState(0);
@@ -911,6 +912,24 @@ function Auth({ db, save, login }) {
     );
     return () => clearInterval(timer);
   }, []);
+  useEffect(() => {
+    if (resendIn <= 0) return;
+    const timer = setInterval(() => setResendIn((seconds) => Math.max(0, seconds - 1)), 1000);
+    return () => clearInterval(timer);
+  }, [resendIn]);
+  const resendOtp = async () => {
+    if (!otpStep || resendIn > 0 || busy) return;
+    try {
+      setBusy(true);
+      setErr("");
+      await requestEmailOtp(otpStep.email, otpStep.metadata || {}, otpStep.mode === "register");
+      setResendIn(60);
+    } catch (error) {
+      setErr(error.message);
+    } finally {
+      setBusy(false);
+    }
+  };
   const submit = async (e) => {
     e.preventDefault();
     const f = new FormData(e.currentTarget);
@@ -938,7 +957,8 @@ function Auth({ db, save, login }) {
           createdAt: new Date().toISOString(),
         } : {};
         await requestEmailOtp(email, metadata, mode === "register");
-        setOtpStep({ email, mode });
+        setOtpStep({ email, mode, metadata });
+        setResendIn(60);
         setErr("");
       } catch (error) {
         setErr(error.message);
@@ -1103,11 +1123,11 @@ function Auth({ db, save, login }) {
             </label>
           )}
           {cloudConfigured ? (
-            otpStep && <label>
-              Six-digit email confirmation code
-              <input name="otp" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength="6" required autoFocus placeholder="000000" />
-              <small>We sent this one-time code to {otpStep.email}.</small>
-            </label>
+            otpStep && <div className="otp-field-group"><label>
+              Email confirmation code
+              <input name="otp" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6,8}" minLength="6" maxLength="8" required autoFocus placeholder="Enter 6–8 digits" />
+              <small>Enter the complete code sent to {otpStep.email}.</small>
+            </label><button type="button" className="secondary resend-otp" disabled={resendIn > 0 || busy} onClick={resendOtp}><Icon name="RefreshCw" />{resendIn > 0 ? `Resend code in ${resendIn}s` : "Resend code"}</button></div>
           ) : (
             <label>
               Password
@@ -1125,6 +1145,7 @@ function Auth({ db, save, login }) {
             onClick={() => {
               setMode(mode === "login" ? "register" : "login");
               setOtpStep(null);
+              setResendIn(0);
               setErr("");
             }}
           >
