@@ -84,6 +84,16 @@ export async function verifyEmailOtp(email, token, type = "signup") {
   return data;
 }
 
+export async function updateCurrentUserPassword(password, username) {
+  const client = requireSupabase();
+  const { data, error } = await client.auth.updateUser({
+    password,
+    data: { username: String(username || "").trim().toLowerCase() },
+  });
+  if (error) throw error;
+  return data;
+}
+
 export async function redeemProAccessCode(code) {
   const client = requireSupabase();
   const { data, error } = await client.rpc("redeem_datachat_pro_code", {

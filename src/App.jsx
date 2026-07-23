@@ -15,8 +15,10 @@ import {
   signIn as cloudSignIn,
   signInWithUsername,
   signUp as cloudSignUp,
+  requestEmailOtp,
   resendSignupOtp,
   verifyEmailOtp,
+  updateCurrentUserPassword,
   redeemProAccessCode,
   signOut as cloudSignOut,
   loadAppData,
@@ -885,7 +887,11 @@ function Auth({ db, save, login }) {
     try {
       setBusy(true);
       setErr("");
-      await resendSignupOtp(otpStep.email);
+      if (otpStep.mode === "recover") {
+        await requestEmailOtp(otpStep.email, {}, false);
+      } else {
+        await resendSignupOtp(otpStep.email);
+      }
       setResendIn(60);
     } catch (error) {
       setErr(error.message);
@@ -903,8 +909,22 @@ function Auth({ db, save, login }) {
         setBusy(true);
         setErr("");
         if (otpStep) {
-          const result = await verifyEmailOtp(email, f.get("otp"), "signup");
+          const result = await verifyEmailOtp(
+            email,
+            f.get("otp"),
+            otpStep.mode === "recover" ? "email" : "signup",
+          );
           if (!result?.user) throw new Error("The confirmation code is invalid or expired.");
+          if (otpStep.mode === "recover") {
+            const updated = await updateCurrentUserPassword(
+              otpStep.password,
+              otpStep.username,
+            );
+            if (!updated?.user) throw new Error("The password could not be saved.");
+            const cloudDb = await loadCloudDb(updated.user);
+            login(cloudDb.users[0]);
+            return;
+          }
           const cloudDb = await loadCloudDb(result.user);
           login(cloudDb.users[0]);
           return;
@@ -914,6 +934,17 @@ function Auth({ db, save, login }) {
           if (!result?.user) throw new Error("Username or password is incorrect.");
           const cloudDb = await loadCloudDb(result.user);
           login(cloudDb.users[0]);
+          return;
+        }
+        if (mode === "recover") {
+          if (password.length < 8)
+            throw new Error("Use a password with at least 8 characters.");
+          if (password !== f.get("confirmPassword"))
+            throw new Error("The passwords do not match.");
+          const username = String(f.get("username") || "").trim().toLowerCase();
+          await requestEmailOtp(email, {}, false);
+          setOtpStep({ email, mode: "recover", username, password });
+          setResendIn(60);
           return;
         }
         if (mode === "register" && f.get("agreement") !== "on")
@@ -1046,17 +1077,25 @@ function Auth({ db, save, login }) {
       <section className="welcome-access">
         <form className="auth-card" onSubmit={submit}>
           <p className="eyebrow">
-            {mode === "login" ? "WELCOME BACK" : "JOIN DATACHAT"}
+            {mode === "login"
+              ? "WELCOME BACK"
+              : mode === "recover"
+                ? "ONE-TIME ACCOUNT UPGRADE"
+                : "JOIN DATACHAT"}
           </p>
           <h2>
             {mode === "login"
               ? "Sign in to your workspace"
-              : "Create your private workspace"}
+              : mode === "recover"
+                ? "Set your username and password"
+                : "Create your private workspace"}
           </h2>
           <p>
             {mode === "login"
               ? "Continue your conversations and financial records."
-              : "New accounts begin with completely separate data and a short guided tour."}
+              : mode === "recover"
+                ? "For accounts created with the old OTP-only login. This confirmation is required once."
+                : "New accounts begin with completely separate data and a short guided tour."}
           </p>
           {mode === "register" && !otpStep && (
             <>
@@ -1074,11 +1113,11 @@ function Auth({ db, save, login }) {
               </label>
             </>
           )}
-          {mode === "login" && !otpStep && <label>
+          {(mode === "login" || mode === "recover") && !otpStep && <label>
             Username
-            <input name="username" required autoComplete="username" placeholder="Your username" />
+            <input name="username" required autoComplete="username" pattern="[A-Za-z0-9._-]{3,24}" placeholder={mode === "recover" ? "Choose a username" : "Your username"} />
           </label>}
-          {mode === "register" && !otpStep && <label>
+          {(mode === "register" || mode === "recover") && !otpStep && <label>
             Email address
             <input name="email" type="email" required autoComplete="email" placeholder="you@example.com" />
           </label>}
@@ -1104,9 +1143,9 @@ function Auth({ db, save, login }) {
             <>
             <label>
               Password
-              <span className="password-field"><input name="password" type={showPassword ? "text" : "password"} required minLength={mode === "register" ? 8 : 6} autoComplete={mode === "register" ? "new-password" : "current-password"} placeholder={mode === "register" ? "At least 8 characters" : "Your password"} /><button type="button" aria-label={showPassword ? "Hide password" : "Show password"} onClick={() => setShowPassword((value) => !value)}><Icon name={showPassword ? "EyeOff" : "Eye"} /></button></span>
+              <span className="password-field"><input name="password" type={showPassword ? "text" : "password"} required minLength={mode === "login" ? 6 : 8} autoComplete={mode === "login" ? "current-password" : "new-password"} placeholder={mode === "login" ? "Your password" : "At least 8 characters"} /><button type="button" aria-label={showPassword ? "Hide password" : "Show password"} onClick={() => setShowPassword((value) => !value)}><Icon name={showPassword ? "EyeOff" : "Eye"} /></button></span>
             </label>
-            {mode === "register" && <label>
+            {mode !== "login" && <label>
               Confirm password
               <input name="confirmPassword" type={showPassword ? "text" : "password"} required minLength="8" autoComplete="new-password" placeholder="Repeat your password" />
             </label>}
@@ -1114,7 +1153,7 @@ function Auth({ db, save, login }) {
           )}
           {err && <div className="error">{err}</div>}
           <button className="primary" type="submit" disabled={busy}>
-            {busy ? "Please wait…" : otpStep ? "Confirm and continue" : mode === "login" ? "Sign in" : "Create free account"}
+            {busy ? "Please wait…" : otpStep ? "Confirm and continue" : mode === "login" ? "Sign in" : mode === "recover" ? "Send one-time code" : "Create free account"}
             <Icon name="ArrowRight" />
           </button>
           <button
@@ -1131,6 +1170,19 @@ function Auth({ db, save, login }) {
               ? "First time here? Create an account"
               : "Already have an account? Sign in"}
           </button>
+          {mode === "login" && (
+            <button
+              type="button"
+              className="link"
+              onClick={() => {
+                setMode("recover");
+                setOtpStep(null);
+                setErr("");
+              }}
+            >
+              Existing OTP-only account? Set username and password
+            </button>
+          )}
           {mode === "login" && !cloudConfigured && (
             <div className="demo">
               Pro demo: demo@datachat.app / demo123
