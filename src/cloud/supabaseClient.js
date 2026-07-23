@@ -31,6 +31,18 @@ export async function signIn(email, password) {
   return data;
 }
 
+export async function signInWithUsername(username, password) {
+  const client = requireSupabase();
+  const normalized = String(username || "").trim().toLowerCase();
+  const { data: email, error: lookupError } = await client.rpc(
+    "datachat_login_email",
+    { requested_username: normalized },
+  );
+  if (lookupError) throw lookupError;
+  if (!email) throw new Error("Username or password is incorrect.");
+  return signIn(email, password);
+}
+
 export async function signUp(email, password, userMetadata = {}) {
   const supabase = requireSupabase();
   const { data, error } = await supabase.auth.signUp({
@@ -54,15 +66,62 @@ export async function requestEmailOtp(email, userMetadata = {}, createUser = tru
   return data;
 }
 
-export async function verifyEmailOtp(email, token) {
+export async function resendSignupOtp(email) {
+  const client = requireSupabase();
+  const { data, error } = await client.auth.resend({ type: "signup", email });
+  if (error) throw error;
+  return data;
+}
+
+export async function verifyEmailOtp(email, token, type = "signup") {
   const client = requireSupabase();
   const { data, error } = await client.auth.verifyOtp({
     email,
     token: String(token || "").replace(/\D/g, ""),
-    type: "email",
+    type,
   });
   if (error) throw error;
   return data;
+}
+
+export async function redeemProAccessCode(code) {
+  const client = requireSupabase();
+  const { data, error } = await client.rpc("redeem_datachat_pro_code", {
+    requested_code: String(code || "").trim().toUpperCase(),
+  });
+  if (error) throw error;
+  return data;
+}
+
+export async function configureCloudAdmin(username, password) {
+  const client = requireSupabase();
+  const { data, error } = await client.rpc("configure_datachat_admin", {
+    requested_username: username,
+    requested_password: password,
+  });
+  if (error) throw error;
+  return data;
+}
+
+export async function createCloudAccessCode(username, password, code) {
+  const client = requireSupabase();
+  const { data, error } = await client.rpc("create_datachat_pro_code", {
+    requested_username: username,
+    requested_password: password,
+    requested_code: code,
+  });
+  if (error) throw error;
+  return data;
+}
+
+export async function listCloudAccessCodes(username, password) {
+  const client = requireSupabase();
+  const { data, error } = await client.rpc("list_datachat_pro_codes", {
+    requested_username: username,
+    requested_password: password,
+  });
+  if (error) throw error;
+  return data || [];
 }
 
 export async function signOut() {
@@ -147,6 +206,11 @@ export async function upsertPublicProfile(user) {
     id: user.id,
     display_name:
       user.user_metadata?.name || user.email?.split("@")[0] || "DataChat member",
+    username:
+      user.user_metadata?.username ||
+      `${user.email?.split("@")[0]?.toLowerCase() || "member"}-${String(user.id)
+        .replaceAll("-", "")
+        .slice(0, 6)}`,
     contact_code: String(user.id).replaceAll("-", "").slice(0, 12).toUpperCase(),
     country: user.user_metadata?.country || "Global",
     phone: user.user_metadata?.phone || "",
@@ -166,7 +230,7 @@ export async function findPublicProfile({ userId, contactCode }) {
   const client = requireSupabase();
   let query = client
     .from("profiles")
-    .select("id, display_name, contact_code, country, phone, avatar_url");
+    .select("id, display_name, username, contact_code, country, phone, avatar_url");
   query = userId
     ? query.eq("id", userId)
     : query.eq("contact_code", String(contactCode || "").trim().toUpperCase());
@@ -191,7 +255,7 @@ export async function loadPublicProfiles(userIds) {
   const client = requireSupabase();
   const { data, error } = await client
     .from("profiles")
-    .select("id, display_name, contact_code, country, phone, avatar_url")
+    .select("id, display_name, username, contact_code, country, phone, avatar_url")
     .in("id", [...new Set(userIds)]);
   if (error) throw error;
   return data || [];

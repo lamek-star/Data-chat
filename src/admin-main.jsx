@@ -16,6 +16,12 @@ import {
   Vault,
 } from "lucide-react";
 import "./styles.css";
+import {
+  cloudConfigured,
+  configureCloudAdmin,
+  createCloudAccessCode,
+  listCloudAccessCodes,
+} from "./cloud/supabaseClient";
 
 const KEY = "datachat-v1";
 const sampleAdmin = {
@@ -84,11 +90,10 @@ const makeCode = () => {
 };
 function AdminApp() {
   const [db, setDb] = useState(read),
-    [loggedIn, setLoggedIn] = useState(
-      sessionStorage.getItem("dc-admin") === "true",
-    ),
+    [loggedIn, setLoggedIn] = useState(false),
     [error, setError] = useState(""),
     [showPassword, setShowPassword] = useState(false),
+    [cloudAdminPassword, setCloudAdminPassword] = useState(""),
     [toast, setToast] = useState("");
   const adminAccount = (db.users || []).find((user) => user.role === "admin");
   const needsAdminSetup = !adminAccount?.credential?.hash;
@@ -112,6 +117,16 @@ function AdminApp() {
     const f = Object.fromEntries(new FormData(e.currentTarget));
     const valid = f.username.trim().toLowerCase() === ADMIN_USERNAME && await verifyAdminCredential(f.password, adminAccount?.credential);
     if (!valid) return setError("Administrator credentials are incorrect.");
+    if (cloudConfigured) {
+      try {
+        await configureCloudAdmin(ADMIN_USERNAME, f.password);
+        const codes = await listCloudAccessCodes(ADMIN_USERNAME, f.password);
+        setDb((current) => ({ ...current, accessCodes: codes }));
+        setCloudAdminPassword(f.password);
+      } catch (cloudError) {
+        return setError(`Cloud administrator access failed: ${cloudError.message}`);
+      }
+    }
     sessionStorage.setItem("dc-admin", "true");
     setLoggedIn(true);
   };
@@ -122,6 +137,14 @@ function AdminApp() {
     if (form.password.length < 12) return setError("Use at least 12 characters for the administrator password.");
     if (form.password !== form.confirmPassword) return setError("The passwords do not match.");
     const credential = await createAdminCredential(form.password);
+    if (cloudConfigured) {
+      try {
+        await configureCloudAdmin(ADMIN_USERNAME, form.password);
+        setCloudAdminPassword(form.password);
+      } catch (cloudError) {
+        return setError(`Cloud administrator setup failed: ${cloudError.message}`);
+      }
+    }
     setDb((current) => ({ ...current, users: current.users.map((account) => account.role === "admin" ? { ...account, username: ADMIN_USERNAME, credential, password: undefined, email: undefined } : account) }));
     sessionStorage.setItem("dc-admin", "true");
     setLoggedIn(true);
@@ -171,24 +194,32 @@ function AdminApp() {
       ...d,
       users: d.users.map((x) => (x.id === id ? { ...x, ...changes } : x)),
     }));
-  const generate = () => {
+  const generate = async () => {
     const code = makeCode();
-    setDb((d) => ({
-      ...d,
-      accessCodes: [
-        {
-          id: `code-${Date.now()}`,
-          code,
-          plan: "Pro",
-          status: "available",
-          paymentMethod: "Cash",
-          createdAt: new Date().toISOString(),
-        },
-        ...(d.accessCodes || []),
-      ],
-    }));
-    navigator.clipboard?.writeText(code);
-    setToast(`${code} generated and copied`);
+    try {
+      const generated = cloudConfigured
+        ? await createCloudAccessCode(
+            ADMIN_USERNAME,
+            cloudAdminPassword,
+            code,
+          )
+        : {
+            id: `code-${Date.now()}`,
+            code,
+            plan: "Pro",
+            status: "available",
+            paymentMethod: "Cash",
+            createdAt: new Date().toISOString(),
+          };
+      setDb((d) => ({
+        ...d,
+        accessCodes: [generated, ...(d.accessCodes || []).filter((item) => item.id !== generated.id)],
+      }));
+      navigator.clipboard?.writeText(code);
+      setToast(`${code} generated in cloud and copied`);
+    } catch (cloudError) {
+      setToast(`Code generation failed: ${cloudError.message}`);
+    }
   };
   const saveLinks = (e) => {
     e.preventDefault();
