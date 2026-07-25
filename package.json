@@ -8,6 +8,8 @@
     "dev:client": "vite",
     "dev:payments": "node server/index.js",
     "build": "vite build",
+    "deploy:cloudflare": "npm run build && wrangler deploy",
+    "worker:dev": "npm run build && wrangler dev",
     "preview": "vite preview",
     "mobile:sync": "npm run build && cap sync",
     "android:open": "npm run mobile:sync && cap open android",
@@ -32,6 +34,7 @@
     "react-dom": "latest",
     "recharts": "latest",
     "stripe": "^22.3.2",
-    "vite": "latest"
+    "vite": "latest",
+    "wrangler": "^4.26.1"
   }
 }

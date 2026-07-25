@@ -197,20 +197,13 @@ function AdminApp() {
   const generate = async () => {
     const code = makeCode();
     try {
-      const generated = cloudConfigured
-        ? await createCloudAccessCode(
-            ADMIN_USERNAME,
-            cloudAdminPassword,
-            code,
-          )
-        : {
-            id: `code-${Date.now()}`,
-            code,
-            plan: "Pro",
-            status: "available",
-            paymentMethod: "Cash",
-            createdAt: new Date().toISOString(),
-          };
+      if (!cloudConfigured || !cloudAdminPassword)
+        throw new Error("Cloud administrator authentication is required.");
+      const generated = await createCloudAccessCode(
+        ADMIN_USERNAME,
+        cloudAdminPassword,
+        code,
+      );
       setDb((d) => ({
         ...d,
         accessCodes: [generated, ...(d.accessCodes || []).filter((item) => item.id !== generated.id)],

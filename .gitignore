@@ -11,6 +11,7 @@ android/keystore.properties
 android/*.jks
 android/*.keystore
 release/
+.wrangler/
 public/assets/*-source.png
 ios/App/Pods/
 ios/App/App/public/
