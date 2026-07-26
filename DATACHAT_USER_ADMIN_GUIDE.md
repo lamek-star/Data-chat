@@ -7,9 +7,14 @@ DataChat is a private contact, messaging, transaction-record, community, market-
 - User app: `https://datachat.harmongt.uk/`
 - Administrator portal: `https://datachat.harmongt.uk/admin.html`
 - Product guide: `https://datachat.harmongt.uk/guide.html`
-- Android installer: `https://github.com/lamek-star/Data-chat/raw/refs/heads/codex/finalize-datachat/public/downloads/DataChat-latest.apk`
+- Android installer: `https://datachat.harmongt.uk/downloads/DataChat-1.1.1.apk`
+- iOS Xcode project: `https://datachat.harmongt.uk/downloads/DataChat-iOS-Xcode.zip`
 
 The `www.datachat.harmongt.uk` versions of these addresses are also configured.
+
+The iOS project must be opened on macOS with Xcode and signed with an Apple
+Developer account before it can become an installable `.ipa` or App Store
+submission.
 
 ## Registration and sign-in
 

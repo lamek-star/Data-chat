@@ -151,7 +151,7 @@ export async function getSession() {
 export function onAuthStateChange(callback) {
   const supabase = requireSupabase();
   const { data } = supabase.auth.onAuthStateChange((event, session) => {
-    callback(event, session?.session || null);
+    callback(event, session || null);
   });
   return data.subscription;
 }

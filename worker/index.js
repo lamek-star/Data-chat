@@ -47,6 +47,7 @@ async function handleApi(request, env, url) {
       configured,
       planName: env.PRO_PLAN_NAME || "DataChat Pro",
       priceLabel: env.PRO_PLAN_PRICE_LABEL || "Set in Stripe",
+      paymentLink: env.STRIPE_PAYMENT_LINK || "",
     });
 
   if (
@@ -126,6 +127,49 @@ export default {
     const url = new URL(request.url);
     if (url.pathname.startsWith("/api/"))
       return handleApi(request, env, url);
+    if (
+      (request.method === "GET" || request.method === "HEAD") &&
+      (url.pathname === "/downloads/DataChat-latest.apk" ||
+        url.pathname === "/downloads/DataChat.apk" ||
+        url.pathname === "/downloads/DataChat-1.1.1.apk")
+    ) {
+      const apk = await env.DOWNLOADS?.get("DataChat-latest.apk");
+      if (!apk) return new Response("DataChat APK is not available.", { status: 404 });
+      const headers = new Headers();
+      apk.writeHttpMetadata(headers);
+      headers.set("Content-Type", "application/vnd.android.package-archive");
+      headers.set(
+        "Content-Disposition",
+        'attachment; filename="DataChat-latest.apk"',
+      );
+      headers.set("ETag", apk.httpEtag);
+      headers.set("Cache-Control", "public, max-age=3600");
+      return new Response(request.method === "HEAD" ? null : apk.body, {
+        headers,
+      });
+    }
+    if (
+      (request.method === "GET" || request.method === "HEAD") &&
+      url.pathname === "/downloads/DataChat-iOS-Xcode.zip"
+    ) {
+      const iosProject = await env.DOWNLOADS?.get("DataChat-iOS-Xcode.zip");
+      if (!iosProject)
+        return new Response("DataChat iOS project is not available.", {
+          status: 404,
+        });
+      const headers = new Headers();
+      iosProject.writeHttpMetadata(headers);
+      headers.set("Content-Type", "application/zip");
+      headers.set(
+        "Content-Disposition",
+        'attachment; filename="DataChat-iOS-Xcode.zip"',
+      );
+      headers.set("ETag", iosProject.httpEtag);
+      headers.set("Cache-Control", "public, max-age=3600");
+      return new Response(request.method === "HEAD" ? null : iosProject.body, {
+        headers,
+      });
+    }
     return env.ASSETS.fetch(request);
   },
 };

@@ -2,7 +2,6 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { motion } from "framer-motion";
 import { Capacitor } from "@capacitor/core";
-import { App as CapacitorApp } from "@capacitor/app";
 import {
   AndroidBiometryStrength,
   BiometricAuth,
@@ -634,6 +633,8 @@ function App() {
     biometricUserRef.current = user.id;
     const enabled =
       localStorage.getItem(`dc-biometric-${user.id}`) === "true";
+    const unlockedThisLaunch =
+      sessionStorage.getItem(`dc-biometric-unlocked-${user.id}`) === "true";
     setBiometricEnabled(enabled);
     BiometricAuth.checkBiometry()
       .then(async (info) => {
@@ -644,12 +645,22 @@ function App() {
           setBiometricUnlocked(true);
           return;
         }
+        if (unlockedThisLaunch) {
+          setBiometricUnlocked(true);
+          return;
+        }
         setBiometricUnlocked(false);
         setBiometricBusy(true);
         biometricPromptRef.current = true;
         try {
           await authenticateDevice();
-          if (active) setBiometricUnlocked(true);
+          if (active) {
+            sessionStorage.setItem(
+              `dc-biometric-unlocked-${user.id}`,
+              "true",
+            );
+            setBiometricUnlocked(true);
+          }
         } catch {
           if (active) setBiometricUnlocked(false);
         } finally {
@@ -667,38 +678,6 @@ function App() {
       active = false;
     };
   }, [user?.id]);
-
-  useEffect(() => {
-    if (!isNativeApp()) return;
-    let handle;
-    CapacitorApp.addListener("appStateChange", async ({ isActive }) => {
-      const currentUserId = biometricUserRef.current;
-      if (
-        !currentUserId ||
-        localStorage.getItem(`dc-biometric-${currentUserId}`) !== "true"
-      )
-        return;
-      if (!isActive) {
-        setBiometricUnlocked(false);
-        return;
-      }
-      if (biometricPromptRef.current) return;
-      setBiometricBusy(true);
-      biometricPromptRef.current = true;
-      try {
-        await authenticateDevice();
-        setBiometricUnlocked(true);
-      } catch {
-        setBiometricUnlocked(false);
-      } finally {
-        biometricPromptRef.current = false;
-        setBiometricBusy(false);
-      }
-    }).then((listener) => {
-      handle = listener;
-    });
-    return () => handle?.remove();
-  }, []);
 
   useEffect(() => {
     if (!cloudConfigured || !cloudAuthUser) return;
@@ -796,6 +775,10 @@ function App() {
     biometricPromptRef.current = true;
     try {
       await authenticateDevice();
+      sessionStorage.setItem(
+        `dc-biometric-unlocked-${activeUser.id}`,
+        "true",
+      );
       setBiometricUnlocked(true);
     } catch (error) {
       setToast(error?.message || "Device authentication was cancelled.");
@@ -818,6 +801,10 @@ function App() {
         biometricPromptRef.current = false;
       }
       localStorage.setItem(`dc-biometric-${activeUser.id}`, "true");
+      sessionStorage.setItem(
+        `dc-biometric-unlocked-${activeUser.id}`,
+        "true",
+      );
       setBiometricAvailable(true);
       setBiometricEnabled(true);
       setBiometricUnlocked(true);
@@ -825,6 +812,7 @@ function App() {
       return;
     }
     localStorage.removeItem(`dc-biometric-${activeUser.id}`);
+    sessionStorage.removeItem(`dc-biometric-unlocked-${activeUser.id}`);
     setBiometricEnabled(false);
     setBiometricUnlocked(true);
     setToast("Biometric access disabled.");
@@ -865,6 +853,9 @@ function App() {
             logout={() => {
               if (cloudConfigured) cloudSignOut().catch(() => {});
               localStorage.removeItem("dc-user");
+              sessionStorage.removeItem(
+                `dc-biometric-unlocked-${activeUser.id}`,
+              );
               setUser(null);
             }}
           />
@@ -906,6 +897,9 @@ function App() {
               onClick={() => {
                 if (cloudConfigured) cloudSignOut().catch(() => {});
                 localStorage.removeItem("dc-user");
+                sessionStorage.removeItem(
+                  `dc-biometric-unlocked-${activeUser.id}`,
+                );
                 setUser(null);
               }}
             >
@@ -5293,7 +5287,7 @@ function Settings({
     fetch(apiUrl("/api/stripe/config"))
       .then((response) => response.json())
       .then(setBilling)
-      .catch(() => setBilling({ configured: Boolean(STRIPE_PAYMENT_LINK), priceLabel: STRIPE_PAYMENT_LINK ? "Stripe test checkout" : "Server unavailable" }));
+      .catch(() => setBilling({ configured: Boolean(STRIPE_PAYMENT_LINK), paymentLink: STRIPE_PAYMENT_LINK, priceLabel: STRIPE_PAYMENT_LINK ? "Stripe test checkout" : "Server unavailable" }));
   }, []);
   const startCardCheckout = async () => {
     setBillingBusy(true);
@@ -5308,8 +5302,12 @@ function Settings({
       if (!response.ok) throw new Error(result.error || "Checkout could not start.");
       window.location.assign(result.url);
     } catch (error) {
-      if (STRIPE_PAYMENT_LINK) {
-        const checkout = new URL(STRIPE_PAYMENT_LINK);
+      const fallbackPaymentLink =
+        billing.paymentLink ||
+        db.adminConfig?.paymentUrl ||
+        STRIPE_PAYMENT_LINK;
+      if (fallbackPaymentLink) {
+        const checkout = new URL(fallbackPaymentLink);
         checkout.searchParams.set("prefilled_email", user.email);
         checkout.searchParams.set("client_reference_id", user.id);
         window.location.assign(checkout.toString());

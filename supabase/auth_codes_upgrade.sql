@@ -1,7 +1,8 @@
 -- DataChat username/password login and cloud Pro access codes.
 -- Run once in the Supabase SQL Editor.
 
-create extension if not exists pgcrypto;
+create schema if not exists extensions;
+create extension if not exists pgcrypto with schema extensions;
 
 alter table public.profiles add column if not exists username text;
 
@@ -95,7 +96,7 @@ create or replace function public.configure_datachat_admin(
 returns boolean
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
 declare
   saved public.datachat_admin_control;
@@ -127,7 +128,7 @@ create or replace function public.create_datachat_pro_code(
 returns jsonb
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
 declare
   saved public.datachat_admin_control;
@@ -161,7 +162,7 @@ create or replace function public.list_datachat_pro_codes(
 returns setof jsonb
 language plpgsql
 security definer
-set search_path = public
+set search_path = public, extensions
 as $$
 declare
   saved public.datachat_admin_control;
