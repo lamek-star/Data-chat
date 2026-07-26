@@ -1,0 +1,35 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "datachat",
+  "main": "worker/index.js",
+  "compatibility_date": "2026-07-26",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "routes": [
+    {
+      "pattern": "datachat.harmongt.uk",
+      "custom_domain": true
+    },
+    {
+      "pattern": "www.datachat.harmongt.uk",
+      "custom_domain": true
+    }
+  ],
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
+  "vars": {
+    "APP_URL": "https://datachat.harmongt.uk",
+    "STRIPE_PRO_PRICE_ID": "price_1TvkwtHmCwS1qvj6UKa8921s",
+    "STRIPE_CHECKOUT_MODE": "payment",
+    "PRO_PLAN_NAME": "DataChat Pro",
+    "PRO_PLAN_PRICE_LABEL": "Stripe checkout"
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  }
+}

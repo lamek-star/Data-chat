@@ -14,6 +14,7 @@ import {
   Download,
   Trash2,
   Vault,
+  BookOpen,
 } from "lucide-react";
 import "./styles.css";
 import {
@@ -284,16 +285,22 @@ function AdminApp() {
             <small>Account access portal</small>
           </div>
         </div>
-        <button
-          className="secondary"
-          onClick={() => {
-            sessionStorage.removeItem("dc-admin");
-            setLoggedIn(false);
-          }}
-        >
-          <LogOut />
-          Sign out
-        </button>
+        <div className="actions">
+          <a className="secondary" href="/guide.html" target="_blank" rel="noreferrer">
+            <BookOpen />
+            Guide
+          </a>
+          <button
+            className="secondary"
+            onClick={() => {
+              sessionStorage.removeItem("dc-admin");
+              setLoggedIn(false);
+            }}
+          >
+            <LogOut />
+            Sign out
+          </button>
+        </div>
       </header>
       <main className="page admin-page">
         <header>

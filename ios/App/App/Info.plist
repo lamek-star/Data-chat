@@ -24,6 +24,10 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>DataChat uses the camera only when you scan a trusted contact or transaction QR code.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>DataChat uses Face ID to unlock your private workspace after you sign in.</string>
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>

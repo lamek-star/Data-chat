@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#071528" />
+    <title>DataChat User & Admin Guide</title>
+    <style>
+      :root { color-scheme: dark; font-family: Inter, system-ui, sans-serif; background:#071528; color:#edf5ff }
+      * { box-sizing:border-box } body { margin:0; background:radial-gradient(circle at 20% 0,#173355,#071528 38%); line-height:1.55 }
+      header,main { width:min(1050px,92vw); margin:auto } header { padding:64px 0 34px }
+      .mark { display:inline-grid; place-items:center; width:54px; height:54px; border-radius:16px; background:#e0a817; color:#071528; font-weight:900; font-size:25px }
+      h1 { font-size:clamp(2rem,5vw,3.5rem); margin:18px 0 8px } h2 { margin-top:42px; color:#ffd463 } h3 { color:#cfe3ff }
+      .lead { max-width:760px; color:#b9c9de; font-size:1.08rem } nav { display:flex; flex-wrap:wrap; gap:10px; margin:26px 0 }
+      a { color:#8fc8ff } nav a,.button { text-decoration:none; border:1px solid #365172; border-radius:999px; padding:9px 14px; color:#edf5ff; background:#10243e }
+      .button.primary { background:#e0a817; color:#071528; border-color:#e0a817; font-weight:800 }
+      section { scroll-margin-top:20px } .card { background:#0e2038e8; border:1px solid #294465; border-radius:18px; padding:20px; margin:16px 0 }
+      table { width:100%; border-collapse:collapse; background:#0e2038; border-radius:16px; overflow:hidden } th,td { padding:12px 14px; text-align:left; border-bottom:1px solid #294465; vertical-align:top } th { color:#ffd463 }
+      code { color:#9fd2ff } .warning { border-left:4px solid #e0a817 } footer { text-align:center; color:#8194ad; padding:50px 20px }
+      @media(max-width:650px){ table,tbody,tr,td { display:block } thead{display:none} td:first-child{font-weight:800;color:#ffd463;padding-bottom:2px} td:last-child{padding-top:2px} }
+    </style>
+  </head>
+  <body>
+    <header>
+      <span class="mark">DC</span>
+      <h1>DataChat user &amp; admin guide</h1>
+      <p class="lead">A practical reference for registration, contacts, live messaging, transaction QR handoffs, communities, Pro subscriptions, backups, biometric access, and administration.</p>
+      <nav>
+        <a href="#user">User app</a><a href="#contacts">Contacts &amp; chat</a><a href="#transactions">Transactions</a><a href="#pro">Pro &amp; payment</a><a href="#admin">Administrator</a><a href="#help">Troubleshooting</a>
+      </nav>
+      <p><a class="button primary" href="/">Open DataChat</a> <a class="button" href="/admin.html">Open Admin</a> <a class="button" href="https://github.com/lamek-star/Data-chat/raw/refs/heads/codex/finalize-datachat/public/downloads/DataChat-latest.apk">Download Android APK</a></p>
+    </header>
+    <main>
+      <section id="user">
+        <h2>Registration and sign-in</h2>
+        <table><thead><tr><th>Label/button</th><th>What it does</th></tr></thead><tbody>
+          <tr><td>Create account</td><td>Registers full name, phone, email, username, and password. A confirmation OTP is used for initial registration only.</td></tr>
+          <tr><td>Email confirmation code</td><td>Accepts the complete code sent to the registered email. Resend code requests another after the timer.</td></tr>
+          <tr><td>Sign in</td><td>Later access uses username/email and password. The session remains signed in until the user selects Sign out.</td></tr>
+          <tr><td>Show password</td><td>Shows or hides the typed password.</td></tr>
+          <tr><td>User agreement</td><td>Explains administrator metadata access and the private information the administrator cannot read.</td></tr>
+        </tbody></table>
+        <div class="card"><h3>Main pages</h3><p><b>Home/Messages</b> is for contacts and conversation. <b>Community Portal</b> is for groups and join requests. <b>Market Rates</b> and <b>Reports</b> are Pro. <b>Records</b> manages transactions. <b>Settings</b> manages the profile, security, backups, subscription, privacy, and sign-out.</p></div>
+      </section>
+      <section id="contacts">
+        <h2>Contacts and live messaging</h2>
+        <table><thead><tr><th>Label/button</th><th>What it does</th></tr></thead><tbody>
+          <tr><td>My contact QR</td><td>Displays the account’s shareable contact QR and text record.</td></tr>
+          <tr><td>Add contact</td><td>Opens camera scanning, QR-image import, and contact-text import. Only explicitly added contacts are shown.</td></tr>
+          <tr><td>Scan with camera</td><td>Uses the native Android/iOS camera. Allow Camera permission. Choose QR image is the fallback.</td></tr>
+          <tr><td>Message field / Send</td><td>Writes to cloud storage and immediately sends through Supabase Realtime to the other online user.</td></tr>
+          <tr><td>Attach transaction</td><td>Sends transaction details together with a QR representation.</td></tr>
+          <tr><td>Add transaction</td><td>Imports a received transaction once. An existing transaction ID produces an already-exists notice.</td></tr>
+          <tr><td>Voice message</td><td>Records and sends audio for Pro members after microphone permission is granted.</td></tr>
+          <tr><td>Report / Block</td><td>Reports inappropriate activity or prevents further contact messages.</td></tr>
+        </tbody></table>
+        <p>Both users need internet or Wi-Fi. Messages persist in the cloud and remain available in later conversations.</p>
+      </section>
+      <section id="transactions">
+        <h2>Transactions and QR cash handoff</h2>
+        <table><thead><tr><th>Label/button</th><th>What it does</th></tr></thead><tbody>
+          <tr><td>New transaction</td><td>Creates a record with receiver, amount, currency (including AED), and transaction details.</td></tr>
+          <tr><td>Generate handoff</td><td>Creates a unique six-digit private security key plus QR/text handoff data containing the intended receiver.</td></tr>
+          <tr><td>Share / Copy / Download</td><td>Sends the transaction QR to a contact or exports its handoff text.</td></tr>
+          <tr><td>Scan handoff QR</td><td>Reads a sender’s QR using the camera or an image.</td></tr>
+          <tr><td>Confirm / Release cash</td><td>Matches transaction ID, receiver, and private key before completion.</td></tr>
+          <tr><td>Import / Export</td><td>Moves supported record files; duplicate transaction IDs are skipped.</td></tr>
+        </tbody></table>
+        <div class="card warning"><b>Security:</b> treat the six-digit handoff key like cash. Share it only with the intended receiver and never in a public community.</div>
+      </section>
+      <section>
+        <h2>Communities, rates, and reports</h2>
+        <p>Users may create groups from their contacts, invite contacts when authorized, discover approved communities, and request membership. The group owner approves or rejects requests. Only the administrator creates root communities and defines their location, hierarchy, purpose, and permissions.</p>
+        <p>Pro members can open market rates and financial reports, filter by market/country and asset (currency, crypto, gold, or silver), publish a named contact offer, and use Direct message to discuss an order. Market values are informational and should be confirmed independently.</p>
+      </section>
+      <section id="pro">
+        <h2>Pro, payment, backup, and biometrics</h2>
+        <table><thead><tr><th>Label/button</th><th>What it does</th></tr></thead><tbody>
+          <tr><td>Pay by card</td><td>Creates a Stripe Checkout session for the signed-in user.</td></tr>
+          <tr><td>Admin cash code / Apply code</td><td>Redeems a strong one-use cloud code for Pro. It is not used for registration or login. Reuse is rejected and the administrator sees who redeemed it.</td></tr>
+          <tr><td>Backup storage</td><td>Offers phone download and configured cloud choices. Managed encrypted backup is a Pro option.</td></tr>
+          <tr><td>Biometric access</td><td>In Settings → Device security, protects the active mobile session with fingerprint, face, or device PIN and locks after backgrounding.</td></tr>
+        </tbody></table>
+        <div class="card warning"><b>Payment status:</b> the currently configured Stripe checkout is in test mode. Live Stripe credentials, live Price/payment link, and a verified webhook are required before accepting real money.</div>
+      </section>
+      <section id="admin">
+        <h2>Administrator portal</h2>
+        <p>Open <a href="/admin.html">the administrator portal</a>. The fixed username is <code>datachat-harmony</code>. During first local setup, choose a unique password of at least 12 characters and keep it outside the APK.</p>
+        <table><thead><tr><th>Label/button</th><th>What it does</th></tr></thead><tbody>
+          <tr><td>Accounts</td><td>Shows allowed metadata such as name, email, plan, status, and registration information.</td></tr>
+          <tr><td>Generate Pro cash code</td><td>Creates and copies a strong, cloud-backed, one-use Pro code.</td></tr>
+          <tr><td>Access codes</td><td>Shows used/unused status and the username/account that redeemed a used code.</td></tr>
+          <tr><td>Configuration</td><td>Stores shared non-secret service settings. Real secrets belong in Cloudflare or Supabase secret storage.</td></tr>
+          <tr><td>Root communities</td><td>Creates official location/hierarchy groups and their purpose and permissions.</td></tr>
+          <tr><td>Recovery backups</td><td>Manages authorized encrypted recovery-package metadata and files.</td></tr>
+          <tr><td>Guide / Sign out</td><td>Opens this reference or ends the administrator browser session.</td></tr>
+        </tbody></table>
+        <p>The administrator interface must not expose message bodies, private contacts, financial records, transaction keys, or decrypted backup contents.</p>
+      </section>
+      <section id="help">
+        <h2>Troubleshooting</h2>
+        <div class="card">
+          <p><b>OTP missing:</b> check Spam/Promotions, confirm the address, use Resend, and verify Supabase SMTP/DNS.</p>
+          <p><b>QR camera unavailable:</b> use the installed APK, allow Camera permission, update Google Play Services, or choose a saved QR image.</p>
+          <p><b>Message delay:</b> confirm both phones have internet, neither user is blocked, and Supabase Realtime is enabled for <code>direct_messages</code>.</p>
+          <p><b>Admin code fails:</b> generate it from the internet admin portal. Codes work once, and local/offline codes cannot activate another phone.</p>
+          <p><b>Biometric unavailable:</b> first configure fingerprint, face, or device PIN in phone settings.</p>
+        </div>
+      </section>
+    </main>
+    <footer>DataChat · User and administrator reference · Version 1.0.0</footer>
+  </body>
+</html>

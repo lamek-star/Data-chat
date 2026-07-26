@@ -1,6 +1,18 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { motion } from "framer-motion";
+import { Capacitor } from "@capacitor/core";
+import { App as CapacitorApp } from "@capacitor/app";
+import {
+  AndroidBiometryStrength,
+  BiometricAuth,
+} from "@aparajita/capacitor-biometric-auth";
+import {
+  CapacitorBarcodeScanner,
+  CapacitorBarcodeScannerCameraDirection,
+  CapacitorBarcodeScannerScanOrientation,
+  CapacitorBarcodeScannerTypeHint,
+} from "@capacitor/barcode-scanner";
 import {
   getCryptoPrices,
   getFxRates,
@@ -511,6 +523,42 @@ function Icon({ name, size = 18 }) {
   const C = I[name] || I.Circle;
   return <C size={size} strokeWidth={1.8} />;
 }
+const isNativeApp = () => Capacitor.isNativePlatform();
+async function authenticateDevice() {
+  await BiometricAuth.authenticate({
+    reason: "Unlock your private DataChat workspace",
+    cancelTitle: "Cancel",
+    allowDeviceCredential: true,
+    iosFallbackTitle: "Use device passcode",
+    androidTitle: "Unlock DataChat",
+    androidSubtitle: "Confirm your fingerprint, face, or device PIN",
+    androidConfirmationRequired: false,
+    androidBiometryStrength: AndroidBiometryStrength.weak,
+  });
+}
+async function scanNativeQr(instructions) {
+  if (!isNativeApp()) return null;
+  const result = await CapacitorBarcodeScanner.scanBarcode({
+    hint: CapacitorBarcodeScannerTypeHint.QR_CODE,
+    scanInstructions: instructions,
+    scanButton: false,
+    cameraDirection: CapacitorBarcodeScannerCameraDirection.BACK,
+    scanOrientation: CapacitorBarcodeScannerScanOrientation.ADAPTIVE,
+    cancelButtonAccessibilityLabel: "Cancel QR scanner",
+    torchButtonOnAccessibilityLabel: "Turn flashlight off",
+    torchButtonOffAccessibilityLabel: "Turn flashlight on",
+    android: { scanningLibrary: "mlkit" },
+  });
+  return result?.ScanResult || "";
+}
+async function scanQrImage(file, readerElementId) {
+  const scanner = new Html5Qrcode(readerElementId);
+  try {
+    return await scanner.scanFile(file, true);
+  } finally {
+    await scanner.clear().catch(() => {});
+  }
+}
 function App() {
   const [db, setDb] = useState(load),
     [user, setUser] = useState(() =>
@@ -521,7 +569,13 @@ function App() {
     [cloudAuthUser, setCloudAuthUser] = useState(null),
     [page, setPage] = useState("home"),
     [toast, setToast] = useState(""),
-    [onboarding, setOnboarding] = useState(false);
+    [onboarding, setOnboarding] = useState(false),
+    [biometricAvailable, setBiometricAvailable] = useState(false),
+    [biometricEnabled, setBiometricEnabled] = useState(false),
+    [biometricUnlocked, setBiometricUnlocked] = useState(true),
+    [biometricBusy, setBiometricBusy] = useState(false);
+  const biometricUserRef = useRef(null);
+  const biometricPromptRef = useRef(false);
 
   useEffect(() => {
     if (!cloudConfigured) localStorage.setItem(K, JSON.stringify(db));
@@ -567,6 +621,84 @@ function App() {
       active = false;
     };
   }, [cloudAuthUser]);
+
+  useEffect(() => {
+    if (!user?.id || !isNativeApp()) {
+      biometricUserRef.current = user?.id || null;
+      setBiometricAvailable(false);
+      setBiometricEnabled(false);
+      setBiometricUnlocked(true);
+      return;
+    }
+    let active = true;
+    biometricUserRef.current = user.id;
+    const enabled =
+      localStorage.getItem(`dc-biometric-${user.id}`) === "true";
+    setBiometricEnabled(enabled);
+    BiometricAuth.checkBiometry()
+      .then(async (info) => {
+        if (!active) return;
+        const available = Boolean(info.isAvailable || info.deviceIsSecure);
+        setBiometricAvailable(available);
+        if (!enabled || !available) {
+          setBiometricUnlocked(true);
+          return;
+        }
+        setBiometricUnlocked(false);
+        setBiometricBusy(true);
+        biometricPromptRef.current = true;
+        try {
+          await authenticateDevice();
+          if (active) setBiometricUnlocked(true);
+        } catch {
+          if (active) setBiometricUnlocked(false);
+        } finally {
+          biometricPromptRef.current = false;
+          if (active) setBiometricBusy(false);
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setBiometricAvailable(false);
+          setBiometricUnlocked(true);
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (!isNativeApp()) return;
+    let handle;
+    CapacitorApp.addListener("appStateChange", async ({ isActive }) => {
+      const currentUserId = biometricUserRef.current;
+      if (
+        !currentUserId ||
+        localStorage.getItem(`dc-biometric-${currentUserId}`) !== "true"
+      )
+        return;
+      if (!isActive) {
+        setBiometricUnlocked(false);
+        return;
+      }
+      if (biometricPromptRef.current) return;
+      setBiometricBusy(true);
+      biometricPromptRef.current = true;
+      try {
+        await authenticateDevice();
+        setBiometricUnlocked(true);
+      } catch {
+        setBiometricUnlocked(false);
+      } finally {
+        biometricPromptRef.current = false;
+        setBiometricBusy(false);
+      }
+    }).then((listener) => {
+      handle = listener;
+    });
+    return () => handle?.remove();
+  }, []);
 
   useEffect(() => {
     if (!cloudConfigured || !cloudAuthUser) return;
@@ -658,6 +790,45 @@ function App() {
   if (!user) return <Auth db={db} save={save} login={login} />;
   const activeUser = db.users.find((x) => x.id === user.id) || user;
   const props = { db, save, user: activeUser, setToast };
+  const retryBiometricUnlock = async () => {
+    if (biometricPromptRef.current) return;
+    setBiometricBusy(true);
+    biometricPromptRef.current = true;
+    try {
+      await authenticateDevice();
+      setBiometricUnlocked(true);
+    } catch (error) {
+      setToast(error?.message || "Device authentication was cancelled.");
+    } finally {
+      biometricPromptRef.current = false;
+      setBiometricBusy(false);
+    }
+  };
+  const changeBiometricAccess = async (enabled) => {
+    if (!isNativeApp())
+      return setToast("Biometric access is available in the Android and iOS apps.");
+    if (enabled) {
+      const info = await BiometricAuth.checkBiometry();
+      if (!info.isAvailable && !info.deviceIsSecure)
+        throw new Error("Set up a fingerprint, face, or device PIN first.");
+      biometricPromptRef.current = true;
+      try {
+        await authenticateDevice();
+      } finally {
+        biometricPromptRef.current = false;
+      }
+      localStorage.setItem(`dc-biometric-${activeUser.id}`, "true");
+      setBiometricAvailable(true);
+      setBiometricEnabled(true);
+      setBiometricUnlocked(true);
+      setToast("Biometric access enabled.");
+      return;
+    }
+    localStorage.removeItem(`dc-biometric-${activeUser.id}`);
+    setBiometricEnabled(false);
+    setBiometricUnlocked(true);
+    setToast("Biometric access disabled.");
+  };
   return (
     <div className="app">
       <Sidebar page={page} setPage={setPage} user={activeUser} />
@@ -682,6 +853,9 @@ function App() {
         {page === "settings" && (
           <Settings
             {...props}
+            biometricAvailable={biometricAvailable}
+            biometricEnabled={biometricEnabled}
+            onBiometricChange={changeBiometricAccess}
             onPlanChanged={(changes) => {
               const next = { ...activeUser, ...changes };
               setUser(next);
@@ -711,6 +885,34 @@ function App() {
             setOnboarding(false);
           }}
         />
+      )}
+      {biometricEnabled && !biometricUnlocked && (
+        <div className="biometric-lock" role="dialog" aria-modal="true">
+          <div className="biometric-lock-card">
+            <span><Icon name="Fingerprint" size={34} /></span>
+            <img src="/assets/datachat-logo.png" alt="DataChat" />
+            <h2>DataChat is locked</h2>
+            <p>Authenticate with your fingerprint, face, or device PIN to open your private workspace.</p>
+            <button
+              className="primary full-btn"
+              disabled={biometricBusy}
+              onClick={retryBiometricUnlock}
+            >
+              <Icon name="ScanFace" />
+              {biometricBusy ? "Checking…" : "Unlock DataChat"}
+            </button>
+            <button
+              className="secondary full-btn"
+              onClick={() => {
+                if (cloudConfigured) cloudSignOut().catch(() => {});
+                localStorage.removeItem("dc-user");
+                setUser(null);
+              }}
+            >
+              Sign out instead
+            </button>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -3105,23 +3307,41 @@ function ContactModal({ user, save, close, setToast }) {
     setToast(`${profile.display_name} added. You can now message each other.`);
     close();
   };
+  const acceptScannedContact = async (value) => {
+    const payload = JSON.parse(value);
+    if (payload.type !== "datachat-user-contact" || !payload.userId)
+      throw new Error("This is not a DataChat user contact QR code.");
+    const profile = await findPublicProfile({ userId: payload.userId });
+    addRemoteProfile(profile);
+  };
+  const scanCamera = async () => {
+    setBusy(true);
+    setScanError("");
+    try {
+      const value = await scanNativeQr(
+        "Place the DataChat contact QR inside the frame",
+      );
+      if (!value) throw new Error("The QR scan was cancelled.");
+      await acceptScannedContact(value);
+    } catch (error) {
+      setScanError(error.message || "No readable DataChat contact was found.");
+    } finally {
+      setBusy(false);
+    }
+  };
   const scanFile = async (file) => {
     if (!file) return;
     setBusy(true);
     setScanError("");
     try {
-      const scanner = new Html5Qrcode("contact-qr-reader");
-      const value = await scanner.scanFile(file, false);
-      await scanner.clear();
-      const payload = JSON.parse(value);
-      if (payload.type !== "datachat-user-contact" || !payload.userId)
-        throw new Error("This is not a DataChat user contact QR code.");
-      const profile = await findPublicProfile({ userId: payload.userId });
-      addRemoteProfile(profile);
+      await acceptScannedContact(
+        await scanQrImage(file, "contact-qr-reader"),
+      );
     } catch (error) {
       setScanError(error.message || "No readable DataChat contact was found.");
     } finally {
       setBusy(false);
+      if (fileRef.current) fileRef.current.value = "";
     }
   };
   const submit = async (e) => {
@@ -3170,12 +3390,32 @@ function ContactModal({ user, save, close, setToast }) {
                 <b>Scan their DataChat QR</b>
                 <small>Choose a QR image or take a photo with your phone.</small>
               </div>
-              <button type="button" className="primary" disabled={busy} onClick={() => fileRef.current?.click()}>
-                {busy ? "Reading…" : "Scan QR"}
+              <button
+                type="button"
+                className="primary"
+                disabled={busy}
+                onClick={isNativeApp() ? scanCamera : () => fileRef.current?.click()}
+              >
+                {busy
+                  ? "Reading…"
+                  : isNativeApp()
+                    ? "Open camera"
+                    : "Choose QR image"}
               </button>
-              <input ref={fileRef} hidden type="file" accept="image/*" capture="environment" onChange={(event) => scanFile(event.target.files?.[0])} />
+              <input ref={fileRef} hidden type="file" accept="image/*" onChange={(event) => scanFile(event.target.files?.[0])} />
               <div id="contact-qr-reader" />
             </div>
+            {isNativeApp() && (
+              <button
+                type="button"
+                className="secondary full-btn"
+                disabled={busy}
+                onClick={() => fileRef.current?.click()}
+              >
+                <Icon name="ImagePlus" />
+                Choose a QR image instead
+              </button>
+            )}
             <div className="billing-divider"><span>or enter their code</span></div>
             <label>
               DataChat contact code
@@ -4146,17 +4386,31 @@ function HandoffModal({ record, close, confirm, setToast }) {
     a.click();
     URL.revokeObjectURL(a.href);
   };
+  const acceptClaimScan = (value) => {
+    if (!value) throw new Error("The QR scan was cancelled.");
+    setPresented(value);
+    setError("");
+    setToast("QR code read. Confirm to validate it.");
+  };
+  const scanCamera = async () => {
+    try {
+      acceptClaimScan(
+        await scanNativeQr("Place the DataChat cash handoff QR inside the frame"),
+      );
+    } catch (error) {
+      setError(error.message || "No readable DataChat QR code was found.");
+    }
+  };
   const scanFile = async (file) => {
     if (!file) return;
     try {
-      const scanner = new Html5Qrcode("qr-file-reader");
-      const value = await scanner.scanFile(file, false);
-      setPresented(value);
-      setError("");
-      setToast("QR code read. Confirm to validate it.");
-      scanner.clear();
-    } catch {
-      setError("No readable DataChat QR code was found in that image.");
+      acceptClaimScan(await scanQrImage(file, "qr-file-reader"));
+    } catch (error) {
+      setError(
+        error.message || "No readable DataChat QR code was found in that image.",
+      );
+    } finally {
+      if (fileRef.current) fileRef.current.value = "";
     }
   };
   return (
@@ -4217,16 +4471,24 @@ function HandoffModal({ record, close, confirm, setToast }) {
             hidden
             type="file"
             accept="image/*"
-            capture="environment"
             onChange={(e) => scanFile(e.target.files?.[0])}
           />
           <button
             className="secondary full-btn"
-            onClick={() => fileRef.current?.click()}
+            onClick={isNativeApp() ? scanCamera : () => fileRef.current?.click()}
           >
             <Icon name="ScanQrCode" />
-            Scan or photograph QR
+            {isNativeApp() ? "Open QR camera" : "Choose QR image"}
           </button>
+          {isNativeApp() && (
+            <button
+              className="secondary full-btn"
+              onClick={() => fileRef.current?.click()}
+            >
+              <Icon name="ImagePlus" />
+              Choose QR image instead
+            </button>
+          )}
           {error && <div className="error">{error}</div>}
           <button className="primary full-btn" onClick={verify}>
             <Icon name="ShieldCheck" />
@@ -5011,7 +5273,17 @@ function BackupPanel({ db, save, user, setToast }) {
     </section>
   );
 }
-function Settings({ db, save, user, logout, setToast, onPlanChanged }) {
+function Settings({
+  db,
+  save,
+  user,
+  logout,
+  setToast,
+  onPlanChanged,
+  biometricAvailable,
+  biometricEnabled,
+  onBiometricChange,
+}) {
   const [agreement, setAgreement] = useState(false),
     [geez, setGeez] = useState(localStorage.getItem("geez") === "true"),
     [billing, setBilling] = useState({ configured: false, priceLabel: "Set in Stripe" }),
@@ -5134,6 +5406,46 @@ function Settings({ db, save, user, logout, setToast, onPlanChanged }) {
         </span>
       </section>
       <div className="settings-grid">
+        <section className="panel">
+          <div className="panel-title">
+            <div>
+              <h2>Device security</h2>
+              <p>Protect an active session when the mobile app opens</p>
+            </div>
+          </div>
+          <Setting
+            icon="Fingerprint"
+            title="Biometric access"
+            text={
+              isNativeApp()
+                ? biometricAvailable
+                  ? "Unlock with fingerprint, face, or device PIN"
+                  : "Set up biometrics or a device PIN in phone settings first"
+                : "Available in the installed Android and iOS apps"
+            }
+          >
+            <label className="switch">
+              <input
+                type="checkbox"
+                checked={biometricEnabled}
+                disabled={!isNativeApp()}
+                onChange={async (event) => {
+                  const enabled = event.target.checked;
+                  try {
+                    await onBiometricChange(enabled);
+                  } catch (error) {
+                    setToast(error.message);
+                  }
+                }}
+              />
+              <span />
+            </label>
+          </Setting>
+          <p className="form-note">
+            Biometric access protects this device after login. Your DataChat
+            username and password remain the account recovery method.
+          </p>
+        </section>
         <section className="panel">
           <div className="panel-title">
             <div>
@@ -5264,6 +5576,15 @@ function Settings({ db, save, user, logout, setToast, onPlanChanged }) {
               <dd>Private local workspace</dd>
             </div>
           </dl>
+          <a
+            className="secondary full-btn"
+            href="/guide.html"
+            target="_blank"
+            rel="noreferrer"
+          >
+            <Icon name="BookOpen" />
+            Open user &amp; admin guide
+          </a>
           <button className="secondary danger full-btn" onClick={logout}>
             <Icon name="LogOut" />
             Sign out
