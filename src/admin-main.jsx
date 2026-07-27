@@ -22,6 +22,10 @@ import {
   configureCloudAdmin,
   createCloudAccessCode,
   listCloudAccessCodes,
+  loadAdminSnapshot,
+  updateCloudUserFromAdmin,
+  deleteCloudUserFromAdmin,
+  createRootCommunityFromAdmin,
 } from "./cloud/supabaseClient";
 
 const KEY = "datachat-v1";
@@ -97,7 +101,9 @@ function AdminApp() {
     [cloudAdminPassword, setCloudAdminPassword] = useState(""),
     [toast, setToast] = useState("");
   const adminAccount = (db.users || []).find((user) => user.role === "admin");
-  const needsAdminSetup = !adminAccount?.credential?.hash;
+  // Cloud-backed portals must show the normal login on every new browser.
+  // The authoritative bcrypt hash lives in Supabase, not localStorage.
+  const needsAdminSetup = !cloudConfigured && !adminAccount?.credential?.hash;
   const accessCodeUserName = (accessCode) =>
     accessCode.usedByName ||
     (db.users || []).find(
@@ -116,13 +122,33 @@ function AdminApp() {
   const login = async (e) => {
     e.preventDefault();
     const f = Object.fromEntries(new FormData(e.currentTarget));
-    const valid = f.username.trim().toLowerCase() === ADMIN_USERNAME && await verifyAdminCredential(f.password, adminAccount?.credential);
+    const validUsername =
+      f.username.trim().toLowerCase() === ADMIN_USERNAME;
+    const valid =
+      validUsername &&
+      (cloudConfigured ||
+        (await verifyAdminCredential(
+          f.password,
+          adminAccount?.credential,
+        )));
     if (!valid) return setError("Administrator credentials are incorrect.");
     if (cloudConfigured) {
       try {
         await configureCloudAdmin(ADMIN_USERNAME, f.password);
         const codes = await listCloudAccessCodes(ADMIN_USERNAME, f.password);
-        setDb((current) => ({ ...current, accessCodes: codes }));
+        const snapshot = await loadAdminSnapshot(ADMIN_USERNAME, f.password);
+        setDb((current) => ({
+          ...current,
+          users: [
+            ...(current.users || []).filter((account) => account.role === "admin"),
+            ...(snapshot.users || []).map((account) => ({
+              ...account,
+              role: "user",
+            })),
+          ],
+          communities: snapshot.communities || [],
+          accessCodes: codes,
+        }));
         setCloudAdminPassword(f.password);
       } catch (cloudError) {
         return setError(`Cloud administrator access failed: ${cloudError.message}`);
@@ -141,6 +167,21 @@ function AdminApp() {
     if (cloudConfigured) {
       try {
         await configureCloudAdmin(ADMIN_USERNAME, form.password);
+        const snapshot = await loadAdminSnapshot(
+          ADMIN_USERNAME,
+          form.password,
+        );
+        setDb((current) => ({
+          ...current,
+          users: [
+            ...current.users.filter((account) => account.role === "admin"),
+            ...(snapshot.users || []).map((account) => ({
+              ...account,
+              role: "user",
+            })),
+          ],
+          communities: snapshot.communities || [],
+        }));
         setCloudAdminPassword(form.password);
       } catch (cloudError) {
         return setError(`Cloud administrator setup failed: ${cloudError.message}`);
@@ -190,11 +231,50 @@ function AdminApp() {
       </main>
     );
   const users = (db.users || []).filter((x) => x.role !== "admin");
-  const updateUser = (id, changes) =>
-    setDb((d) => ({
-      ...d,
-      users: d.users.map((x) => (x.id === id ? { ...x, ...changes } : x)),
-    }));
+  const updateUser = async (id, changes) => {
+    const current = (db.users || []).find((account) => account.id === id);
+    const next = { ...current, ...changes };
+    try {
+      await updateCloudUserFromAdmin(
+        ADMIN_USERNAME,
+        cloudAdminPassword,
+        id,
+        next.plan || "Free",
+        next.status || "active",
+      );
+      setDb((state) => ({
+        ...state,
+        users: state.users.map((account) =>
+          account.id === id ? next : account,
+        ),
+      }));
+      setToast(`${next.name}'s account updated`);
+    } catch (cloudError) {
+      setToast(`Account update failed: ${cloudError.message}`);
+    }
+  };
+  const removeUser = async (account) => {
+    if (
+      !confirm(
+        `Permanently remove ${account.name} (${account.email}) and their cloud account?`,
+      )
+    )
+      return;
+    try {
+      await deleteCloudUserFromAdmin(
+        ADMIN_USERNAME,
+        cloudAdminPassword,
+        account.id,
+      );
+      setDb((state) => ({
+        ...state,
+        users: state.users.filter((item) => item.id !== account.id),
+      }));
+      setToast(`${account.name} removed`);
+    } catch (cloudError) {
+      setToast(`User removal failed: ${cloudError.message}`);
+    }
+  };
   const generate = async () => {
     const code = makeCode();
     try {
@@ -221,7 +301,7 @@ function AdminApp() {
     setDb((d) => ({ ...d, adminConfig: config }));
     setToast("Configuration saved");
   };
-  const createCommunity = (e) => {
+  const createCommunity = async (e) => {
     e.preventDefault();
     const f = Object.fromEntries(new FormData(e.currentTarget));
     const parent = (db.communities || []).find((x) => x.id === f.parentId);
@@ -242,12 +322,27 @@ function AdminApp() {
       admins: ["admin"],
       createdAt: new Date().toISOString(),
     };
-    setDb((d) => ({
-      ...d,
-      communities: [...(d.communities || []), community],
-    }));
-    e.currentTarget.reset();
-    setToast(`${community.name} created`);
+    try {
+      if (cloudConfigured) {
+        community.id = await createRootCommunityFromAdmin(
+          ADMIN_USERNAME,
+          cloudAdminPassword,
+          {
+            ...community,
+            allowSubgroups: community.permissions.allowSubgroups,
+            allowInvites: community.permissions.allowInvites,
+          },
+        );
+      }
+      setDb((d) => ({
+        ...d,
+        communities: [...(d.communities || []), community],
+      }));
+      e.currentTarget.reset();
+      setToast(`${community.name} created`);
+    } catch (cloudError) {
+      setToast(`Community creation failed: ${cloudError.message}`);
+    }
   };
   const downloadRecovery = (item) => {
     const url = URL.createObjectURL(
@@ -372,8 +467,34 @@ function AdminApp() {
                     <option value="suspended">Suspended</option>
                   </select>
                 </label>
+                <button
+                  className="icon-btn danger"
+                  aria-label={`Remove ${u.name}`}
+                  title="Remove cloud user"
+                  onClick={() => removeUser(u)}
+                >
+                  <Trash2 />
+                </button>
               </article>
             ))}
+          </div>
+          <div className="actions">
+            <a
+              className="secondary"
+              href="https://supabase.com/dashboard/project/ufneentdbsdmfiwvjthj/auth/users"
+              target="_blank"
+              rel="noreferrer"
+            >
+              Open Supabase users
+            </a>
+            <a
+              className="secondary"
+              href="https://dash.cloudflare.com/"
+              target="_blank"
+              rel="noreferrer"
+            >
+              Open Cloudflare
+            </a>
           </div>
         </section>
         <section className="panel admin-links">

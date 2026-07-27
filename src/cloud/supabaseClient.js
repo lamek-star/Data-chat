@@ -84,6 +84,194 @@ export async function verifyEmailOtp(email, token, type = "signup") {
   return data;
 }
 
+export async function markEmailVerified() {
+  const client = requireSupabase();
+  const { data, error } = await client.rpc("mark_datachat_email_verified");
+  if (error) throw error;
+  return data;
+}
+
+export async function loadAdminSnapshot(username, password) {
+  const client = requireSupabase();
+  const { data, error } = await client.rpc("datachat_admin_snapshot", {
+    requested_username: username,
+    requested_password: password,
+  });
+  if (error) throw error;
+  return data || { users: [], communities: [] };
+}
+
+export async function updateCloudUserFromAdmin(
+  username,
+  password,
+  userId,
+  plan,
+  status,
+) {
+  const client = requireSupabase();
+  const { data, error } = await client.rpc("datachat_admin_update_user", {
+    requested_username: username,
+    requested_password: password,
+    requested_user_id: userId,
+    requested_plan: plan,
+    requested_status: status,
+  });
+  if (error) throw error;
+  return data;
+}
+
+export async function deleteCloudUserFromAdmin(username, password, userId) {
+  const client = requireSupabase();
+  const { data, error } = await client.rpc("datachat_admin_delete_user", {
+    requested_username: username,
+    requested_password: password,
+    requested_user_id: userId,
+  });
+  if (error) throw error;
+  return data;
+}
+
+export async function createRootCommunityFromAdmin(
+  username,
+  password,
+  community,
+) {
+  const client = requireSupabase();
+  const { data, error } = await client.rpc(
+    "datachat_admin_create_root_community",
+    {
+      requested_username: username,
+      requested_password: password,
+      requested_name: community.name,
+      requested_location: community.location,
+      requested_purpose: community.purpose,
+      requested_parent_id: community.parentId || null,
+      requested_allow_subgroups: Boolean(community.allowSubgroups),
+      requested_allow_invites: Boolean(community.allowInvites),
+    },
+  );
+  if (error) throw error;
+  return data;
+}
+
+export async function loadCloudCommunities() {
+  const client = requireSupabase();
+  const [{ data: communities, error }, { data: memberships, error: memberError }] =
+    await Promise.all([
+      client
+        .from("communities")
+        .select(
+          "id,name,location,purpose,parent_id,owner_id,is_admin_root,allow_subgroups,allow_invites,created_at",
+        )
+        .order("created_at", { ascending: true }),
+      client
+        .from("community_memberships")
+        .select(
+          "community_id,user_id,status,role,requested_at,decided_at",
+        ),
+    ]);
+  if (error) throw error;
+  if (memberError) throw memberError;
+  return (communities || []).map((community) => ({
+    id: community.id,
+    name: community.name,
+    location: community.location,
+    purpose: community.purpose,
+    parentId: community.parent_id,
+    createdBy: community.owner_id,
+    isAdminRoot: community.is_admin_root,
+    permissions: {
+      allowSubgroups: community.allow_subgroups,
+      allowInvites: community.allow_invites,
+    },
+    members: (memberships || [])
+      .filter(
+        (membership) =>
+          membership.community_id === community.id &&
+          membership.status === "approved",
+      )
+      .map((membership) => membership.user_id),
+    joinRequests: (memberships || [])
+      .filter(
+        (membership) =>
+          membership.community_id === community.id &&
+          membership.status === "pending",
+      )
+      .map((membership) => ({
+        userId: membership.user_id,
+        status: membership.status,
+        requestedAt: membership.requested_at,
+      })),
+    createdAt: community.created_at,
+  }));
+}
+
+export async function createCloudCommunity(community) {
+  const client = requireSupabase();
+  const { data: authData } = await client.auth.getUser();
+  if (!authData.user) throw new Error("Sign in again.");
+  const { data, error } = await client
+    .from("communities")
+    .insert({
+      name: community.name,
+      location: community.location,
+      purpose: community.purpose,
+      parent_id: community.parentId,
+      owner_id: authData.user.id,
+      is_admin_root: false,
+      allow_subgroups: Boolean(community.allowSubgroups),
+      allow_invites: true,
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  await client.from("community_memberships").insert({
+    community_id: data.id,
+    user_id: authData.user.id,
+    status: "approved",
+    role: "owner",
+    decided_at: new Date().toISOString(),
+  });
+  return data;
+}
+
+export async function requestCloudCommunityJoin(communityId) {
+  const client = requireSupabase();
+  const { data: authData } = await client.auth.getUser();
+  if (!authData.user) throw new Error("Sign in again.");
+  const { error } = await client.from("community_memberships").upsert(
+    {
+      community_id: communityId,
+      user_id: authData.user.id,
+      status: "pending",
+      role: "member",
+      requested_at: new Date().toISOString(),
+      decided_at: null,
+    },
+    { onConflict: "community_id,user_id" },
+  );
+  if (error) throw error;
+  return true;
+}
+
+export async function decideCloudCommunityJoin(
+  communityId,
+  userId,
+  approved,
+) {
+  const client = requireSupabase();
+  const { error } = await client
+    .from("community_memberships")
+    .update({
+      status: approved ? "approved" : "declined",
+      decided_at: new Date().toISOString(),
+    })
+    .eq("community_id", communityId)
+    .eq("user_id", userId);
+  if (error) throw error;
+  return true;
+}
+
 export async function updateCurrentUserPassword(password, username) {
   const client = requireSupabase();
   const { data, error } = await client.auth.updateUser({
@@ -240,7 +428,7 @@ export async function findPublicProfile({ userId, contactCode }) {
   const client = requireSupabase();
   let query = client
     .from("profiles")
-    .select("id, display_name, username, contact_code, country, phone, avatar_url");
+    .select("id, display_name, username, contact_code, country, phone, avatar_url, plan, status, email_verified");
   query = userId
     ? query.eq("id", userId)
     : query.eq("contact_code", String(contactCode || "").trim().toUpperCase());
@@ -265,7 +453,7 @@ export async function loadPublicProfiles(userIds) {
   const client = requireSupabase();
   const { data, error } = await client
     .from("profiles")
-    .select("id, display_name, username, contact_code, country, phone, avatar_url")
+    .select("id, display_name, username, contact_code, country, phone, avatar_url, plan, status, email_verified")
     .in("id", [...new Set(userIds)]);
   if (error) throw error;
   return data || [];

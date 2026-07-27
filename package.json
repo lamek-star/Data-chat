@@ -1,7 +1,7 @@
 {
   "name": "datachat",
   "private": true,
-  "version": "1.1.0",
+  "version": "1.2.0",
   "type": "module",
   "scripts": {
     "dev": "concurrently --kill-others-on-fail \"vite\" \"node server/index.js\"",
@@ -23,6 +23,7 @@
     "@capacitor/cli": "^8.4.2",
     "@capacitor/core": "^8.4.2",
     "@capacitor/ios": "^8.4.2",
+    "@capacitor/local-notifications": "^8.0.1",
     "@supabase/supabase-js": "^2.36.0",
     "@vitejs/plugin-react": "latest",
     "concurrently": "^9.2.4",

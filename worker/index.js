@@ -28,6 +28,29 @@ function stripeClient(env) {
   return env.STRIPE_SECRET_KEY ? new Stripe(env.STRIPE_SECRET_KEY) : null;
 }
 
+async function persistPaidPlan(env, userId) {
+  if (!env.SUPABASE_URL || !env.SUPABASE_SECRET_KEY || !userId) return false;
+  const response = await fetch(
+    `${env.SUPABASE_URL}/rest/v1/profiles?id=eq.${encodeURIComponent(userId)}`,
+    {
+      method: "PATCH",
+      headers: {
+        apikey: env.SUPABASE_SECRET_KEY,
+        Authorization: `Bearer ${env.SUPABASE_SECRET_KEY}`,
+        "Content-Type": "application/json",
+        Prefer: "return=minimal",
+      },
+      body: JSON.stringify({
+        plan: "Pro",
+        updated_at: new Date().toISOString(),
+      }),
+    },
+  );
+  if (!response.ok)
+    throw new Error(`Subscription persistence failed (${response.status}).`);
+  return true;
+}
+
 async function handleApi(request, env, url) {
   if (request.method === "OPTIONS")
     return new Response(null, { status: 204, headers: corsHeaders(request) });
@@ -88,6 +111,12 @@ async function handleApi(request, env, url) {
       return json(request, { error: "Invalid checkout session." }, 400);
     try {
       const session = await stripe.checkout.sessions.retrieve(sessionId);
+      if (
+        session.payment_status === "paid" &&
+        session.client_reference_id
+      ) {
+        await persistPaidPlan(env, session.client_reference_id);
+      }
       return json(request, {
         status: session.status,
         paymentStatus: session.payment_status,
@@ -131,7 +160,8 @@ export default {
       (request.method === "GET" || request.method === "HEAD") &&
       (url.pathname === "/downloads/DataChat-latest.apk" ||
         url.pathname === "/downloads/DataChat.apk" ||
-        url.pathname === "/downloads/DataChat-1.1.1.apk")
+        url.pathname === "/downloads/DataChat-1.1.1.apk" ||
+        url.pathname === "/downloads/DataChat-1.2.0.apk")
     ) {
       const apk = await env.DOWNLOADS?.get("DataChat-latest.apk");
       if (!apk) return new Response("DataChat APK is not available.", { status: 404 });

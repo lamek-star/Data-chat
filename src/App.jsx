@@ -12,6 +12,7 @@ import {
   CapacitorBarcodeScannerScanOrientation,
   CapacitorBarcodeScannerTypeHint,
 } from "@capacitor/barcode-scanner";
+import { LocalNotifications } from "@capacitor/local-notifications";
 import {
   getCryptoPrices,
   getFxRates,
@@ -29,6 +30,7 @@ import {
   requestEmailOtp,
   resendSignupOtp,
   verifyEmailOtp,
+  markEmailVerified,
   updateCurrentUserPassword,
   redeemProAccessCode,
   signOut as cloudSignOut,
@@ -41,6 +43,10 @@ import {
   subscribeToDirectMessages,
   unsubscribeChannel,
   uploadProfilePhoto,
+  loadCloudCommunities,
+  createCloudCommunity,
+  requestCloudCommunityJoin,
+  decideCloudCommunityJoin,
 } from "./cloud/supabaseClient";
 import * as I from "lucide-react";
 import QRCode from "qrcode";
@@ -308,10 +314,11 @@ const buildCloudDb = (rows, userId, profile = {}) => {
 };
 
 async function loadCloudDb(authUser) {
-  const [rows, publicProfile, remoteMessages] = await Promise.all([
+  const [rows, publicProfile, remoteMessages, cloudCommunities] = await Promise.all([
     loadAppData(authUser.id),
     upsertPublicProfile(authUser),
     loadDirectMessages(authUser.id),
+    loadCloudCommunities(),
   ]);
   const cloudDb = buildCloudDb(rows, authUser.id, {
     name: authUser.user_metadata?.name || authUser.email?.split("@")[0],
@@ -329,7 +336,11 @@ async function loadCloudDb(authUser) {
     country: publicProfile.country,
     phone: publicProfile.phone || cloudDb.users[0].phone,
     profilePhoto: publicProfile.avatar_url || cloudDb.users[0].profilePhoto,
+    plan: publicProfile.plan || cloudDb.users[0].plan,
+    status: publicProfile.status || cloudDb.users[0].status,
+    emailVerified: Boolean(publicProfile.email_verified),
   };
+  cloudDb.communities = cloudCommunities;
   const contactByRemoteId = new Map(
     cloudDb.contacts
       .filter((contact) => contact.remoteUserId)
@@ -558,6 +569,90 @@ async function scanQrImage(file, readerElementId) {
     await scanner.clear().catch(() => {});
   }
 }
+function readSelectedFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () =>
+      reject(reader.error || new Error("The selected file could not be read."));
+    reader.readAsText(file);
+  });
+}
+function parseCsvRows(text) {
+  const rows = [];
+  let row = [];
+  let value = "";
+  let quoted = false;
+  const source = String(text || "").replace(/^\ufeff/, "");
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    if (character === '"' && quoted && source[index + 1] === '"') {
+      value += '"';
+      index += 1;
+    } else if (character === '"') {
+      quoted = !quoted;
+    } else if (character === "," && !quoted) {
+      row.push(value.trim());
+      value = "";
+    } else if ((character === "\n" || character === "\r") && !quoted) {
+      if (character === "\r" && source[index + 1] === "\n") index += 1;
+      row.push(value.trim());
+      if (row.some((cell) => cell !== "")) rows.push(row);
+      row = [];
+      value = "";
+    } else {
+      value += character;
+    }
+  }
+  row.push(value.trim());
+  if (row.some((cell) => cell !== "")) rows.push(row);
+  if (quoted) throw new Error("The CSV contains an unfinished quoted value.");
+  return rows;
+}
+async function requestNotificationPermission() {
+  if (isNativeApp()) {
+    const current = await LocalNotifications.checkPermissions();
+    const result =
+      current.display === "granted"
+        ? current
+        : await LocalNotifications.requestPermissions();
+    return result.display === "granted";
+  }
+  if (!("Notification" in window)) return false;
+  return (await Notification.requestPermission()) === "granted";
+}
+async function notifyIncomingMessage(senderName, message) {
+  const title = `New message from ${senderName || "DataChat contact"}`;
+  const body = message?.transaction
+    ? `Transaction ${message.transaction.reference || "record"} received`
+    : message?.voiceUrl
+      ? "Voice message received"
+      : String(message?.content || "Open DataChat to view the message").slice(
+          0,
+          140,
+        );
+  if (isNativeApp()) {
+    const permission = await LocalNotifications.checkPermissions();
+    if (permission.display !== "granted") return false;
+    await LocalNotifications.schedule({
+      notifications: [
+        {
+          id: Math.floor(Date.now() % 2147483647),
+          title,
+          body,
+          schedule: { at: new Date(Date.now() + 250) },
+          extra: { page: "home" },
+        },
+      ],
+    });
+    return true;
+  }
+  if ("Notification" in window && Notification.permission === "granted") {
+    new Notification(title, { body, icon: "/assets/datachat-logo.png" });
+    return true;
+  }
+  return false;
+}
 function App() {
   const [db, setDb] = useState(load),
     [user, setUser] = useState(() =>
@@ -690,24 +785,36 @@ function App() {
           (item) => item.remoteUserId === row.sender_id,
         );
         if (!contact) return current;
+        const incoming = {
+          ...row.payload,
+          id: row.id,
+          owner: cloudAuthUser.id,
+          contact: contact.id,
+          sender: "them",
+          cloudMessage: true,
+          time:
+            row.payload?.time ||
+            new Date(row.created_at).toLocaleTimeString([], {
+              hour: "2-digit",
+              minute: "2-digit",
+            }),
+        };
+        notifyIncomingMessage(contact.name, incoming).catch(() => {});
         return {
           ...current,
-          messages: [
-            ...current.messages,
+          messages: [...current.messages, incoming],
+          notifications: [
             {
-              ...row.payload,
-              id: row.id,
+              id: `notification-${row.id}`,
               owner: cloudAuthUser.id,
-              contact: contact.id,
-              sender: "them",
-              cloudMessage: true,
-              time:
-                row.payload?.time ||
-                new Date(row.created_at).toLocaleTimeString([], {
-                  hour: "2-digit",
-                  minute: "2-digit",
-                }),
+              title: `New message from ${contact.name}`,
+              messageId: row.id,
+              createdAt: row.created_at || new Date().toISOString(),
+              read: false,
             },
+            ...(current.notifications || []).filter(
+              (item) => item.messageId !== row.id,
+            ),
           ],
         };
       });
@@ -761,6 +868,8 @@ function App() {
   const login = (u) => {
     if (u.status === "suspended" || u.status === "pending") return;
     setUser(u);
+    if (u.username)
+      localStorage.setItem("dc-last-username", String(u.username));
     if (u.role === "admin") return;
     if (!cloudConfigured) localStorage.setItem("dc-user", JSON.stringify(u));
     if (u.role !== "admin" && !localStorage.getItem(`dc-onboarded-${u.id}`))
@@ -903,7 +1012,7 @@ function App() {
                 setUser(null);
               }}
             >
-              Sign out instead
+              Use username and password
             </button>
           </div>
         </div>
@@ -1035,7 +1144,11 @@ function LegacyAuth({ db, save, login }) {
   );
 }
 function Auth({ db, save, login }) {
-  const [mode, setMode] = useState("login");
+  const [mode, setMode] = useState(() => {
+    const recoveryRequested = localStorage.getItem("dc-open-recovery") === "1";
+    if (recoveryRequested) localStorage.removeItem("dc-open-recovery");
+    return recoveryRequested ? "recover" : "login";
+  });
   const [err, setErr] = useState("");
   const [otpStep, setOtpStep] = useState(null);
   const [resendIn, setResendIn] = useState(0);
@@ -1276,21 +1389,21 @@ function Auth({ db, save, login }) {
             {mode === "login"
               ? "WELCOME BACK"
               : mode === "recover"
-                ? "ONE-TIME ACCOUNT UPGRADE"
+                ? "PASSWORD RECOVERY"
                 : "JOIN DATACHAT"}
           </p>
           <h2>
             {mode === "login"
               ? "Sign in to your workspace"
               : mode === "recover"
-                ? "Set your username and password"
+                ? "Recover your password"
                 : "Create your private workspace"}
           </h2>
           <p>
             {mode === "login"
               ? "Continue your conversations and financial records."
               : mode === "recover"
-                ? "For accounts created with the old OTP-only login. This confirmation is required once."
+                ? "Confirm the code sent to your email, then save a new password."
                 : "New accounts begin with completely separate data and a short guided tour."}
           </p>
           {mode === "register" && !otpStep && (
@@ -1311,7 +1424,7 @@ function Auth({ db, save, login }) {
           )}
           {(mode === "login" || mode === "recover") && !otpStep && <label>
             Username
-            <input name="username" required autoComplete="username" pattern="[A-Za-z0-9._-]{3,24}" placeholder={mode === "recover" ? "Choose a username" : "Your username"} />
+            <input name="username" required autoComplete="username" pattern="[A-Za-z0-9._-]{3,24}" defaultValue={mode === "login" ? localStorage.getItem("dc-last-username") || "" : ""} placeholder={mode === "recover" ? "Your username" : "Your username"} />
           </label>}
           {(mode === "register" || mode === "recover") && !otpStep && <label>
             Email address
@@ -1376,7 +1489,7 @@ function Auth({ db, save, login }) {
                 setErr("");
               }}
             >
-              Existing OTP-only account? Set username and password
+              Forgot password? Send recovery code
             </button>
           )}
           {mode === "login" && !cloudConfigured && (
@@ -2416,8 +2529,12 @@ function CommunityManager({ db, save, user, setToast }) {
   const eligibleParents = communities.filter(
     (x) => x.permissions?.allowSubgroups,
   );
-  const createGroup = (e) => {
+  const createGroup = async (e) => {
     e.preventDefault();
+    if (user.plan !== "Pro")
+      return setToast("Only Pro members can create communities.");
+    if (cloudConfigured && !user.emailVerified)
+      return setToast("Verify your email before creating a community.");
     const f = Object.fromEntries(new FormData(e.currentTarget));
     const parent = communities.find((x) => x.id === f.parentId);
     if (!parent)
@@ -2439,11 +2556,27 @@ function CommunityManager({ db, save, user, setToast }) {
       admins: [user.id],
       createdAt: new Date().toISOString(),
     };
-    save((d) => ({ ...d, communities: [...(d.communities || []), group] }));
-    setToast(`${group.name} created under ${parent.name}`);
-    setCreateOpen(false);
+    try {
+      if (cloudConfigured) {
+        const created = await createCloudCommunity({
+          ...group,
+          allowSubgroups: group.permissions.allowSubgroups,
+        });
+        group.id = created.id;
+      }
+      save((d) => ({
+        ...d,
+        communities: [...(d.communities || []), group],
+      }));
+      setToast(`${group.name} created under ${parent.name}`);
+      setCreateOpen(false);
+    } catch (error) {
+      setToast(`Community creation failed: ${error.message}`);
+    }
   };
-  const join = (group) => {
+  const join = async (group) => {
+    try {
+      if (cloudConfigured) await requestCloudCommunityJoin(group.id);
     save((d) => ({
       ...d,
       communities: d.communities.map((x) =>
@@ -2453,14 +2586,23 @@ function CommunityManager({ db, save, user, setToast }) {
       ),
     }));
     setToast(`Join request sent to the owner of ${group.name}`);
+    } catch (error) {
+      setToast(`Join request failed: ${error.message}`);
+    }
   };
-  const decideJoin = (groupId, requesterId, approved) => {
+  const decideJoin = async (groupId, requesterId, approved) => {
+    try {
+      if (cloudConfigured)
+        await decideCloudCommunityJoin(groupId, requesterId, approved);
     save((d) => ({ ...d, communities: d.communities.map((x) => x.id !== groupId ? x : ({
       ...x,
       members: approved ? [...new Set([...(x.members || []), requesterId])] : (x.members || []),
       joinRequests: (x.joinRequests || []).map((request) => request.userId === requesterId ? { ...request, status: approved ? "approved" : "declined", decidedAt: new Date().toISOString() } : request),
     })) }));
     setToast(approved ? "Join request approved" : "Join request declined");
+    } catch (error) {
+      setToast(`Approval failed: ${error.message}`);
+    }
   };
   const saveMembers = (e) => {
     e.preventDefault();
@@ -2495,11 +2637,18 @@ function CommunityManager({ db, save, user, setToast }) {
         <button
           className="primary"
           onClick={() => setCreateOpen(true)}
-          disabled={!eligibleParents.length}
+          disabled={
+            !eligibleParents.length ||
+            user.plan !== "Pro" ||
+            (cloudConfigured && !user.emailVerified)
+          }
         >
           <Icon name="UsersRound" />
           Create community
         </button>
+        {user.plan !== "Pro" && (
+          <small>Community creation is available to verified Pro members.</small>
+        )}
       </div>
       <div className="community-tree">
         {communities.map((group) => {
@@ -2681,7 +2830,11 @@ function CommunityManager({ db, save, user, setToast }) {
 }
 function Home({ db, save, user, setToast, setPage }) {
   const contacts = db.contacts.filter((x) => x.owner === user.id),
-    [selected, setSelected] = useState(contacts[0]?.id),
+    [selected, setSelected] = useState(() =>
+      window.matchMedia("(max-width: 760px)").matches
+        ? null
+        : contacts[0]?.id,
+    ),
     [search, setSearch] = useState(""),
     [add, setAdd] = useState(false),
     [report, setReport] = useState(null),
@@ -3535,59 +3688,69 @@ function Records({ db, save, user, setToast }) {
     a.click();
     URL.revokeObjectURL(a.href);
   };
-  const importCsv = (e) => {
+  const importCsv = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    file.text().then((t) => {
-      const lines = t
-          .replace(/^\ufeff/, "")
-          .split(/\r?\n/)
-          .filter(Boolean),
-        parse = (s) => {
-          const out = [];
-          let cur = "",
-            q = false;
-          for (let i = 0; i < s.length; i++) {
-            if (s[i] === '"' && s[i + 1] === '"') {
-              cur += '"';
-              i++;
-            } else if (s[i] === '"') q = !q;
-            else if (s[i] === "," && !q) {
-              out.push(cur);
-              cur = "";
-            } else cur += s[i];
-          }
-          out.push(cur);
-          return out;
+    try {
+      const parsedRows = parseCsvRows(await readSelectedFile(file));
+      if (parsedRows.length < 2)
+        throw new Error("The CSV has no transaction rows.");
+      const h = parsedRows[0].map((value) =>
+          value.toLowerCase().replaceAll("_", " ").trim(),
+        ),
+        get = (row, ...names) => {
+          const index = names
+            .map((name) => h.indexOf(name))
+            .find((position) => position >= 0);
+          return index >= 0 ? row[index] || "" : "";
         };
-      const h = parse(lines[0]).map((x) => x.toLowerCase()),
-        get = (a, n) => a[h.indexOf(n)] || "";
-      const imported = lines.slice(1).map((line) => {
-        const a = parse(line);
+      if (!h.includes("id") && !h.includes("receiver"))
+        throw new Error(
+          "This is not a DataChat CSV. Include at least an ID or Receiver column.",
+        );
+      const existing = new Set(
+        db.records
+          .filter((record) => record.owner === user.id)
+          .map((record) => String(record.id).trim().toLowerCase()),
+      );
+      const imported = parsedRows
+        .slice(1)
+        .map((a) => {
+          const requestedId = get(a, "id", "reference", "transaction id");
+          const id = requestedId || uid("TXN");
+          if (existing.has(id.trim().toLowerCase())) return null;
+          existing.add(id.trim().toLowerCase());
         return {
-          id: get(a, "id") || uid("TXN"),
+          id,
           owner: user.id,
-          sender: get(a, "sender"),
-          senderPhone: get(a, "sender phone"),
-          from: get(a, "from"),
-          receiver: get(a, "receiver"),
-          receiverPhone: get(a, "receiver phone"),
-          to: get(a, "to"),
-          account: get(a, "account"),
-          amount: +get(a, "amount") || 0,
+          sender: get(a, "sender", "sender name"),
+          senderPhone: get(a, "sender phone", "senderphone"),
+          from: get(a, "from", "origin"),
+          receiver: get(a, "receiver", "receiver name"),
+          receiverPhone: get(a, "receiver phone", "receiverphone"),
+          to: get(a, "to", "destination"),
+          account: get(a, "account", "account number"),
+          amount: Number(get(a, "amount").replaceAll(",", "")) || 0,
           currency: get(a, "currency") || "USD",
-          rate: +get(a, "rate") || 1,
+          rate: Number(get(a, "rate").replaceAll(",", "")) || 1,
           category: get(a, "category") || "Remittance",
           date: get(a, "date") || today(),
           status: get(a, "status") || "Draft",
           tag: get(a, "tag") || "",
-          key: get(a, "security key"),
-          remark: get(a, "remark"),
+          key: get(a, "security key", "key"),
+          remark: get(a, "remark", "note"),
         };
-      });
+      })
+        .filter(Boolean);
+      if (!imported.length)
+        throw new Error("Every transaction in this file already exists.");
       save((d) => ({ ...d, records: [...d.records, ...imported] }));
       setToast(`${imported.length} records imported`);
-    });
+    } catch (error) {
+      setToast(`Import failed: ${error.message}`);
+    } finally {
+      e.target.value = "";
+    }
   };
   const groups = group
     ? Object.entries(
@@ -3862,7 +4025,9 @@ function RecordRow({ r, edit, del, update, handoff, share }) {
 }
 function TransactionChatCard({ message, db, save, user, setToast }) {
   const [qr, setQr] = useState("");
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(() =>
+    window.matchMedia("(hover: none)").matches,
+  );
   const [keyVisible, setKeyVisible] = useState(false);
   const data = message.transaction;
   const existingRecord = db.records.find(
@@ -5282,7 +5447,11 @@ function Settings({
     [geez, setGeez] = useState(localStorage.getItem("geez") === "true"),
     [billing, setBilling] = useState({ configured: false, priceLabel: "Set in Stripe" }),
     [billingBusy, setBillingBusy] = useState(false),
-    [billingError, setBillingError] = useState("");
+    [billingError, setBillingError] = useState(""),
+    [permissionStatus, setPermissionStatus] = useState(""),
+    [verifyEmailOpen, setVerifyEmailOpen] = useState(false),
+    [verifyEmailSent, setVerifyEmailSent] = useState(false),
+    [verifyEmailBusy, setVerifyEmailBusy] = useState(false);
   useEffect(() => {
     fetch(apiUrl("/api/stripe/config"))
       .then((response) => response.json())
@@ -5290,6 +5459,11 @@ function Settings({
       .catch(() => setBilling({ configured: Boolean(STRIPE_PAYMENT_LINK), paymentLink: STRIPE_PAYMENT_LINK, priceLabel: STRIPE_PAYMENT_LINK ? "Stripe test checkout" : "Server unavailable" }));
   }, []);
   const startCardCheckout = async () => {
+    if (cloudConfigured && !user.emailVerified) {
+      setBillingError("Verify your email before upgrading to Pro.");
+      setVerifyEmailOpen(true);
+      return;
+    }
     setBillingBusy(true);
     setBillingError("");
     try {
@@ -5320,6 +5494,10 @@ function Settings({
   const redeemCashCode = async (event) => {
     event.preventDefault();
     setBillingError("");
+    if (cloudConfigured && !user.emailVerified) {
+      setVerifyEmailOpen(true);
+      return setBillingError("Verify your email before activating Pro.");
+    }
     const code = new FormData(event.currentTarget).get("cashCode").trim().toUpperCase();
     try {
       const match = cloudConfigured
@@ -5407,6 +5585,49 @@ function Settings({
         <section className="panel">
           <div className="panel-title">
             <div>
+              <h2>Email &amp; recovery</h2>
+              <p>Verify ownership and recover account access</p>
+            </div>
+          </div>
+          <Setting
+            icon={user.emailVerified ? "BadgeCheck" : "MailWarning"}
+            title="Email verification"
+            text={
+              user.emailVerified
+                ? `${user.email} is verified`
+                : "Free messaging works now; verification is required for Pro"
+            }
+          >
+            {user.emailVerified ? (
+              <span className="badge completed">Verified</span>
+            ) : (
+              <button
+                className="secondary"
+                onClick={() => setVerifyEmailOpen(true)}
+              >
+                Verify
+              </button>
+            )}
+          </Setting>
+          <Setting
+            icon="KeyRound"
+            title="Forgot password"
+            text="Send a recovery code from the sign-in page"
+          >
+            <button
+              className="secondary"
+              onClick={() => {
+                localStorage.setItem("dc-open-recovery", "1");
+                logout();
+              }}
+            >
+              Open recovery
+            </button>
+          </Setting>
+        </section>
+        <section className="panel">
+          <div className="panel-title">
+            <div>
               <h2>Device security</h2>
               <p>Protect an active session when the mobile app opens</p>
             </div>
@@ -5443,6 +5664,56 @@ function Settings({
             Biometric access protects this device after login. Your DataChat
             username and password remain the account recovery method.
           </p>
+          <Setting
+            icon="BellRing"
+            title="Message notifications"
+            text="Show an alert when a new direct message arrives"
+          >
+            <button
+              className="secondary"
+              onClick={async () => {
+                try {
+                  const granted = await requestNotificationPermission();
+                  setPermissionStatus(
+                    granted
+                      ? "Notifications enabled"
+                      : "Notification permission was not granted",
+                  );
+                } catch (error) {
+                  setPermissionStatus(error.message);
+                }
+              }}
+            >
+              Enable
+            </button>
+          </Setting>
+          <Setting
+            icon="Mic"
+            title="Microphone"
+            text="Required only for Pro voice messages"
+          >
+            <button
+              className="secondary"
+              onClick={async () => {
+                try {
+                  const stream = await navigator.mediaDevices.getUserMedia({
+                    audio: true,
+                  });
+                  stream.getTracks().forEach((track) => track.stop());
+                  setPermissionStatus("Microphone enabled");
+                } catch (error) {
+                  setPermissionStatus(
+                    `Microphone permission is blocked: ${error.message}`,
+                  );
+                }
+              }}
+            >
+              Check
+            </button>
+          </Setting>
+          {permissionStatus && (
+            <p className="form-note">{permissionStatus}</p>
+          )}
         </section>
         <section className="panel">
           <div className="panel-title">
@@ -5589,6 +5860,76 @@ function Settings({
           </button>
         </section>
       </div>
+      {verifyEmailOpen && (
+        <Modal
+          title="Verify your email"
+          close={() => {
+            setVerifyEmailOpen(false);
+            setVerifyEmailSent(false);
+          }}
+        >
+          <form
+            className="form"
+            onSubmit={async (event) => {
+              event.preventDefault();
+              try {
+                setVerifyEmailBusy(true);
+                if (!verifyEmailSent) {
+                  await requestEmailOtp(user.email, {}, false);
+                  setVerifyEmailSent(true);
+                  setToast(`Verification code sent to ${user.email}`);
+                  return;
+                }
+                const token = new FormData(event.currentTarget).get("otp");
+                await verifyEmailOtp(user.email, token, "email");
+                await markEmailVerified();
+                onPlanChanged({ emailVerified: true });
+                save((current) => ({
+                  ...current,
+                  users: current.users.map((account) =>
+                    account.id === user.id
+                      ? { ...account, emailVerified: true }
+                      : account,
+                  ),
+                }));
+                setVerifyEmailOpen(false);
+                setToast("Email verified. Pro activation is now available.");
+              } catch (error) {
+                setToast(`Email verification failed: ${error.message}`);
+              } finally {
+                setVerifyEmailBusy(false);
+              }
+            }}
+          >
+            <p className="form-note">
+              We will send an eight-digit code to <b>{user.email}</b>. Check
+              Spam or Promotions if it is not in your inbox.
+            </p>
+            {verifyEmailSent && (
+              <label>
+                Verification code
+                <input
+                  name="otp"
+                  inputMode="numeric"
+                  pattern="[0-9]{8}"
+                  minLength="8"
+                  maxLength="8"
+                  required
+                  autoComplete="one-time-code"
+                  placeholder="Enter 8 digits"
+                />
+              </label>
+            )}
+            <button className="primary" disabled={verifyEmailBusy}>
+              {verifyEmailBusy
+                ? "Please wait…"
+                : verifyEmailSent
+                  ? "Confirm email"
+                  : "Send verification code"}
+            </button>
+          </form>
+        </Modal>
+      )}
       {agreement && (
         <Modal title="Private agreement" close={() => setAgreement(false)} wide>
           <div className="legal">
