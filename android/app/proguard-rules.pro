@@ -19,3 +19,12 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+
+# Capacitor discovers plugins and their annotated bridge methods at runtime.
+-keep @com.getcapacitor.annotation.CapacitorPlugin class * { *; }
+-keep class * extends com.getcapacitor.Plugin { *; }
+-keepattributes RuntimeVisibleAnnotations,AnnotationDefault
+
+# The barcode plugin references this optional annotation only for model
+# serialization metadata; scanning does not require Gson at runtime.
+-dontwarn com.google.gson.annotations.SerializedName

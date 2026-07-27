@@ -648,7 +648,7 @@ async function notifyIncomingMessage(senderName, message) {
     return true;
   }
   if ("Notification" in window && Notification.permission === "granted") {
-    new Notification(title, { body, icon: "/assets/datachat-logo.png" });
+    new Notification(title, { body, icon: "/assets/datachat-logo.webp" });
     return true;
   }
   return false;
@@ -990,7 +990,7 @@ function App() {
         <div className="biometric-lock" role="dialog" aria-modal="true">
           <div className="biometric-lock-card">
             <span><Icon name="Fingerprint" size={34} /></span>
-            <img src="/assets/datachat-logo.png" alt="DataChat" />
+            <img src="/assets/datachat-logo.webp" alt="DataChat" />
             <h2>DataChat is locked</h2>
             <p>Authenticate with your fingerprint, face, or device PIN to open your private workspace.</p>
             <button
@@ -1158,21 +1158,21 @@ function Auth({ db, save, login }) {
   const [agreementOpen, setAgreementOpen] = useState(false);
   const slides = [
     {
-      image: "/assets/welcome-community.png",
+      image: "/assets/welcome-community.webp",
       eyebrow: "CONNECTED COMMUNITY",
       title: "Talk, transfer and stay close.",
       text: "Find trusted people, chat privately, and keep every financial conversation connected to a clear record.",
       icon: "MessagesSquare",
     },
     {
-      image: "/assets/welcome-verify.png",
+      image: "/assets/welcome-verify.webp",
       eyebrow: "SAFE CASH HANDOFF",
       title: "Verify the right receiver.",
       text: "Receiver-bound QR and text codes reduce mistakes before cash is released.",
       icon: "ScanQrCode",
     },
     {
-      image: "/assets/datachat-transfer-ad.png",
+      image: "/assets/datachat-transfer-ad.webp",
       eyebrow: "CLEAR FINANCIAL RECORDS",
       title: "One place for every transfer.",
       text: "Create transactions, approve pending orders, import or export CSV files, and understand your activity.",
@@ -1341,7 +1341,7 @@ function Auth({ db, save, login }) {
         <div className="welcome-top">
           <div className="brand">
             <div className="logo">
-              <img src="/assets/datachat-logo.png" alt="DataChat" />
+              <img src="/assets/datachat-logo.webp" alt="DataChat" />
             </div>
             <b>DataChat</b>
           </div>
@@ -1672,7 +1672,7 @@ function Sidebar({ page, setPage, user }) {
     <aside>
       <div className="brand">
         <div className="logo">
-          <img src="/assets/datachat-logo.png" alt="DataChat" />
+          <img src="/assets/datachat-logo.webp" alt="DataChat" />
         </div>
         <b>DataChat</b>
       </div>
@@ -2998,7 +2998,7 @@ function Home({ db, save, user, setToast, setPage }) {
         />
         <div className="ad">
           <img
-            src="/assets/datachat-transfer-ad.png"
+            src="/assets/datachat-transfer-ad.webp"
             alt="Secure international transfer confirmation"
           />
           <div>

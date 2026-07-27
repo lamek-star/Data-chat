@@ -15,6 +15,12 @@ android {
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 2
         versionName "1.2.0"
+        // The direct-download APK targets the CPU architecture used by
+        // current Android phones. Google Play will generate other splits
+        // from the app bundle when an upload key is configured.
+        ndk {
+            abiFilters "arm64-v8a"
+        }
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -34,11 +40,16 @@ android {
     }
     buildTypes {
         release {
-            minifyEnabled false
+            minifyEnabled true
+            shrinkResources true
             if (uploadKeyPropertiesFile.exists()) {
                 signingConfig signingConfigs.release
+            } else {
+                // Keeps the direct-download build installable until the
+                // permanent Google Play upload key is supplied.
+                signingConfig signingConfigs.debug
             }
-            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
 }
