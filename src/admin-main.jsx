@@ -15,6 +15,13 @@ import {
   Trash2,
   Vault,
   BookOpen,
+  UserRoundCheck,
+  UserPlus,
+  Star,
+  ReceiptText,
+  MessageCircle,
+  Mic,
+  HardDrive,
 } from "lucide-react";
 import "./styles.css";
 import {
@@ -26,6 +33,7 @@ import {
   updateCloudUserFromAdmin,
   deleteCloudUserFromAdmin,
   createRootCommunityFromAdmin,
+  loadAdminOperationalSnapshot,
 } from "./cloud/supabaseClient";
 
 const KEY = "datachat-v1";
@@ -99,6 +107,7 @@ function AdminApp() {
     [error, setError] = useState(""),
     [showPassword, setShowPassword] = useState(false),
     [cloudAdminPassword, setCloudAdminPassword] = useState(""),
+    [operations, setOperations] = useState({}),
     [toast, setToast] = useState("");
   const adminAccount = (db.users || []).find((user) => user.role === "admin");
   // Cloud-backed portals must show the normal login on every new browser.
@@ -137,6 +146,10 @@ function AdminApp() {
         await configureCloudAdmin(ADMIN_USERNAME, f.password);
         const codes = await listCloudAccessCodes(ADMIN_USERNAME, f.password);
         const snapshot = await loadAdminSnapshot(ADMIN_USERNAME, f.password);
+        const operational = await loadAdminOperationalSnapshot(
+          ADMIN_USERNAME,
+          f.password,
+        );
         setDb((current) => ({
           ...current,
           users: [
@@ -150,6 +163,7 @@ function AdminApp() {
           accessCodes: codes,
         }));
         setCloudAdminPassword(f.password);
+        setOperations(operational);
       } catch (cloudError) {
         return setError(`Cloud administrator access failed: ${cloudError.message}`);
       }
@@ -171,6 +185,10 @@ function AdminApp() {
           ADMIN_USERNAME,
           form.password,
         );
+        const operational = await loadAdminOperationalSnapshot(
+          ADMIN_USERNAME,
+          form.password,
+        );
         setDb((current) => ({
           ...current,
           users: [
@@ -183,6 +201,7 @@ function AdminApp() {
           communities: snapshot.communities || [],
         }));
         setCloudAdminPassword(form.password);
+        setOperations(operational);
       } catch (cloudError) {
         return setError(`Cloud administrator setup failed: ${cloudError.message}`);
       }
@@ -421,6 +440,23 @@ function AdminApp() {
             </p>
           </div>
         </div>
+        <section className="admin-operations" aria-label="Cloud operations">
+          {[
+            ["Users", users.length, Users],
+            ["Contacts", operations.contacts || 0, UserRoundCheck],
+            ["Requests", operations.contactRequests || 0, UserPlus],
+            ["Ratings", operations.ratings || 0, Star],
+            ["Transactions", operations.transactions || 0, ReceiptText],
+            ["Messages", operations.messages || 0, MessageCircle],
+            ["Voice", operations.voiceMessages || 0, Mic],
+            ["Backups", operations.backups || 0, HardDrive],
+          ].map(([label, value, MetricIcon]) => (
+            <article key={label}>
+              <MetricIcon />
+              <span><b>{value}</b><small>{label}</small></span>
+            </article>
+          ))}
+        </section>
         <section className="panel">
           <div className="panel-title">
             <div>
@@ -442,7 +478,9 @@ function AdminApp() {
                 <div className="admin-identity">
                   <b>{u.name}</b>
                   <span>{u.email}</span>
-                  <small>ID {u.id}</small>
+                  <small>
+                    ID {u.id} · {u.visibleInCommunity ? "Community visible" : "Community private"}
+                  </small>
                 </div>
                 <label>
                   Plan

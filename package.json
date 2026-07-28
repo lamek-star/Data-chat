@@ -1,13 +1,14 @@
 {
   "name": "datachat",
   "private": true,
-  "version": "1.2.0",
+  "version": "1.3.0",
   "type": "module",
   "scripts": {
     "dev": "concurrently --kill-others-on-fail \"vite\" \"node server/index.js\"",
     "dev:client": "vite",
     "dev:payments": "node server/index.js",
     "build": "vite build",
+    "test:professional-flows": "node scripts/test-professional-flows.mjs",
     "deploy:cloudflare": "npm run build && wrangler deploy",
     "worker:dev": "npm run build && wrangler dev",
     "preview": "vite preview",

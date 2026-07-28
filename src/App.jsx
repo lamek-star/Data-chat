@@ -13,6 +13,7 @@ import {
   CapacitorBarcodeScannerTypeHint,
 } from "@capacitor/barcode-scanner";
 import { LocalNotifications } from "@capacitor/local-notifications";
+import { App as CapacitorApp } from "@capacitor/app";
 import {
   getCryptoPrices,
   getFxRates,
@@ -41,12 +42,23 @@ import {
   loadDirectMessages,
   sendDirectMessage,
   subscribeToDirectMessages,
+  subscribeToContactNetwork,
   unsubscribeChannel,
   uploadProfilePhoto,
   loadCloudCommunities,
   createCloudCommunity,
   requestCloudCommunityJoin,
   decideCloudCommunityJoin,
+  updateCommunityVisibility,
+  loadCommunityDirectory,
+  loadContactNetwork,
+  sendContactRequest,
+  respondContactRequest,
+  addContactByQr,
+  saveCustomerRating,
+  deleteCustomerRating,
+  uploadVoiceMessage,
+  createVoicePlaybackUrl,
 } from "./cloud/supabaseClient";
 import * as I from "lucide-react";
 import QRCode from "qrcode";
@@ -314,11 +326,20 @@ const buildCloudDb = (rows, userId, profile = {}) => {
 };
 
 async function loadCloudDb(authUser) {
-  const [rows, publicProfile, remoteMessages, cloudCommunities] = await Promise.all([
+  const [
+    rows,
+    publicProfile,
+    remoteMessages,
+    cloudCommunities,
+    contactNetwork,
+    communityDirectory,
+  ] = await Promise.all([
     loadAppData(authUser.id),
     upsertPublicProfile(authUser),
     loadDirectMessages(authUser.id),
     loadCloudCommunities(),
+    loadContactNetwork(),
+    loadCommunityDirectory(),
   ]);
   const cloudDb = buildCloudDb(rows, authUser.id, {
     name: authUser.user_metadata?.name || authUser.email?.split("@")[0],
@@ -339,8 +360,39 @@ async function loadCloudDb(authUser) {
     plan: publicProfile.plan || cloudDb.users[0].plan,
     status: publicProfile.status || cloudDb.users[0].status,
     emailVerified: Boolean(publicProfile.email_verified),
+    visibleInCommunity: Boolean(publicProfile.visible_in_community),
   };
   cloudDb.communities = cloudCommunities;
+  const profileById = new Map(
+    (contactNetwork.profiles || []).map((profile) => [profile.id, profile]),
+  );
+  const normalizedContacts = (contactNetwork.contacts || [])
+    .map((relationship, index) => {
+      const profile = profileById.get(relationship.contact_user_id);
+      if (!profile) return null;
+      return {
+        id: `contact-${profile.id}`,
+        owner: authUser.id,
+        remoteUserId: profile.id,
+        contactCode: profile.contact_code,
+        name: profile.display_name,
+        username: profile.username,
+        phone: "",
+        country: profile.country || "Global",
+        profilePhoto: profile.avatar_url || null,
+        color: ["#d7a62b", "#4c8ed9", "#8f69d8", "#35a57a"][index % 4],
+        source: relationship.source,
+        createdAt: relationship.created_at,
+      };
+    })
+    .filter(Boolean);
+  cloudDb.contacts = [
+    ...normalizedContacts,
+    ...cloudDb.contacts.filter((contact) => !contact.remoteUserId),
+  ];
+  cloudDb.contactRequests = contactNetwork.requests || [];
+  cloudDb.customerRatings = contactNetwork.ratings || [];
+  cloudDb.communityDirectory = communityDirectory || [];
   const contactByRemoteId = new Map(
     cloudDb.contacts
       .filter((contact) => contact.remoteUserId)
@@ -352,8 +404,12 @@ async function loadCloudDb(authUser) {
     const peerId = row.sender_id === authUser.id ? row.recipient_id : row.sender_id;
     const contact = contactByRemoteId.get(peerId);
     if (!contact) continue;
+    const voiceUrl = row.payload?.voicePath
+      ? await createVoicePlaybackUrl(row.payload.voicePath).catch(() => null)
+      : row.payload?.voiceUrl;
     cloudDb.messages.push({
       ...row.payload,
+      voiceUrl,
       id: row.id,
       owner: authUser.id,
       contact: contact.id,
@@ -514,14 +570,52 @@ const priorityCurrencies = [
   "BHD",
   "OMR",
 ];
+const nativeCurrencyCodes = (() => {
+  try {
+    return Intl.supportedValuesOf("currency");
+  } catch {
+    return priorityCurrencies;
+  }
+})();
+const currencyDisplayNames = (() => {
+  try {
+    return new Intl.DisplayNames(["en"], { type: "currency" });
+  } catch {
+    return null;
+  }
+})();
+const currencyLabel = (code) => {
+  if (code === "Other") return "Other";
+  let symbol = code;
+  try {
+    symbol =
+      new Intl.NumberFormat("en", {
+        style: "currency",
+        currency: code,
+        currencyDisplay: "narrowSymbol",
+      })
+        .formatToParts(0)
+        .find((part) => part.type === "currency")?.value || code;
+  } catch {
+    // Keep the ISO code when the platform cannot format a rare currency.
+  }
+  const name = currencyDisplayNames?.of(code) || code;
+  return `${code} · ${name} (${symbol})`;
+};
 function useCurrencyCodes(includeOther = false) {
-  const [codes, setCodes] = useState(priorityCurrencies);
+  const [codes, setCodes] = useState([
+    ...new Set([...priorityCurrencies, ...nativeCurrencyCodes]),
+  ]);
   useEffect(() => {
     const controller = new AbortController();
     getSupportedCurrencies({ signal: controller.signal })
       .then((rows) =>
         setCodes([
-          ...new Set([...priorityCurrencies, ...rows.map((x) => x.code)]),
+          ...new Set([
+            ...priorityCurrencies,
+            ...nativeCurrencyCodes,
+            ...rows.map((x) => x.code),
+          ]),
         ]),
       )
       .catch(() => {});
@@ -667,7 +761,8 @@ function App() {
     [biometricAvailable, setBiometricAvailable] = useState(false),
     [biometricEnabled, setBiometricEnabled] = useState(false),
     [biometricUnlocked, setBiometricUnlocked] = useState(true),
-    [biometricBusy, setBiometricBusy] = useState(false);
+    [biometricBusy, setBiometricBusy] = useState(false),
+    [authLoading, setAuthLoading] = useState(cloudConfigured);
   const biometricUserRef = useRef(null);
   const biometricPromptRef = useRef(false);
 
@@ -688,12 +783,20 @@ function App() {
     getSession()
       .then((session) => {
         if (!active) return;
-        if (session?.user) setCloudAuthUser(session.user);
+        if (session?.user) {
+          setCloudAuthUser(session.user);
+        } else {
+          setAuthLoading(false);
+        }
       })
-      .catch(() => {});
+      .catch(() => setAuthLoading(false));
     const subscription = onAuthStateChange((_event, session) => {
+      if (session?.user) setAuthLoading(true);
       setCloudAuthUser(session?.user || null);
-      if (!session?.user) setUser(null);
+      if (!session?.user) {
+        setUser(null);
+        setAuthLoading(false);
+      }
     });
     return () => {
       active = false;
@@ -710,11 +813,33 @@ function App() {
         setDb(cloudDb);
         setUser(cloudDb.users[0]);
       })
-      .catch((error) => setToast(`Cloud data load failed: ${error.message}`));
+      .catch((error) => setToast(`Cloud data load failed: ${error.message}`))
+      .finally(() => {
+        if (active) setAuthLoading(false);
+      });
     return () => {
       active = false;
     };
   }, [cloudAuthUser]);
+
+  useEffect(() => {
+    if (!isNativeApp()) return;
+    let listener;
+    CapacitorApp.addListener("backButton", () => {
+      if (document.body.dataset.datachatChatOpen === "true") {
+        window.dispatchEvent(new Event("datachat-close-chat"));
+        return;
+      }
+      if (page !== "home") {
+        setPage("home");
+        return;
+      }
+      CapacitorApp.exitApp();
+    }).then((handle) => {
+      listener = handle;
+    });
+    return () => listener?.remove();
+  }, [page]);
 
   useEffect(() => {
     if (!user?.id || !isNativeApp()) {
@@ -776,8 +901,11 @@ function App() {
 
   useEffect(() => {
     if (!cloudConfigured || !cloudAuthUser) return;
-    const receive = ({ new: row }) => {
+    const receive = async ({ new: row }) => {
       if (!row || row.sender_id === cloudAuthUser.id) return;
+      const resolvedVoiceUrl = row.payload?.voicePath
+        ? await createVoicePlaybackUrl(row.payload.voicePath).catch(() => null)
+        : row.payload?.voiceUrl;
       setDb((current) => {
         if (current.messages.some((message) => message.id === row.id))
           return current;
@@ -787,6 +915,7 @@ function App() {
         if (!contact) return current;
         const incoming = {
           ...row.payload,
+          voiceUrl: resolvedVoiceUrl,
           id: row.id,
           owner: cloudAuthUser.id,
           contact: contact.id,
@@ -823,6 +952,62 @@ function App() {
     return () => {
       unsubscribeChannel(channel);
     };
+  }, [cloudAuthUser]);
+
+  useEffect(() => {
+    if (!cloudConfigured || !cloudAuthUser) return;
+    let refreshing = false;
+    const refresh = async () => {
+      if (refreshing) return;
+      refreshing = true;
+      try {
+        const [network, directory] = await Promise.all([
+          loadContactNetwork(),
+          loadCommunityDirectory(),
+        ]);
+        const profileById = new Map(
+          (network.profiles || []).map((profile) => [profile.id, profile]),
+        );
+        const normalized = (network.contacts || [])
+          .map((relationship, index) => {
+            const profile = profileById.get(relationship.contact_user_id);
+            if (!profile) return null;
+            return {
+              id: `contact-${profile.id}`,
+              owner: cloudAuthUser.id,
+              remoteUserId: profile.id,
+              contactCode: profile.contact_code,
+              name: profile.display_name,
+              username: profile.username,
+              phone: "",
+              country: profile.country || "Global",
+              profilePhoto: profile.avatar_url || null,
+              color: ["#d7a62b", "#4c8ed9", "#8f69d8", "#35a57a"][
+                index % 4
+              ],
+              source: relationship.source,
+              createdAt: relationship.created_at,
+            };
+          })
+          .filter(Boolean);
+        setDb((current) => ({
+          ...current,
+          contacts: [
+            ...normalized,
+            ...current.contacts.filter((contact) => !contact.remoteUserId),
+          ],
+          contactRequests: network.requests || [],
+          customerRatings: network.ratings || [],
+          communityDirectory: directory || [],
+        }));
+      } catch (error) {
+        setToast(`Contact refresh failed: ${error.message}`);
+      } finally {
+        refreshing = false;
+      }
+    };
+    const channel = subscribeToContactNetwork(refresh);
+    return () => unsubscribeChannel(channel);
   }, [cloudAuthUser]);
 
   useEffect(() => {
@@ -875,6 +1060,14 @@ function App() {
     if (u.role !== "admin" && !localStorage.getItem(`dc-onboarded-${u.id}`))
       setOnboarding(true);
   };
+  if (authLoading)
+    return (
+      <div className="app-loading" role="status" aria-live="polite">
+        <img src="/assets/datachat-logo.webp" alt="" />
+        <b>DataChat</b>
+        <span>Opening your secure workspace…</span>
+      </div>
+    );
   if (!user) return <Auth db={db} save={save} login={login} />;
   const activeUser = db.users.find((x) => x.id === user.id) || user;
   const props = { db, save, user: activeUser, setToast };
@@ -1944,31 +2137,29 @@ function RatesMarketplace({ db, save, user, setToast, setPage }) {
       .includes(search.toLowerCase()),
   );
   const messageProvider = (offer) => {
-    let contact = db.contacts.find(
+    const contact = db.contacts.find(
       (x) =>
         x.owner === user.id &&
         (x.phone === offer.contact || x.rateProvider === offer.provider),
     );
-    const contactId = contact?.id || uid("c");
-    const newContact = contact || {
-      id: contactId,
-      owner: user.id,
-      name: offer.provider,
-      phone: offer.contact,
-      country: offer.location || "Marketplace",
-      color: "#35a57a",
-      rateProvider: offer.provider,
-    };
     const orderText = `Rate order inquiry: ${offer.side} ${offer.fromCurrency}/${offer.toCurrency} at ${offer.rate}. Instrument: ${offer.instrument}. Please confirm availability, fees, and final amount.`;
+    if (!contact) {
+      navigator.clipboard?.writeText(
+        `${orderText}\nProvider contact: ${offer.contact}`,
+      );
+      setToast(
+        "Inquiry copied. Add this provider through Community or their QR before messaging.",
+      );
+      return;
+    }
     save((d) => ({
       ...d,
-      contacts: contact ? d.contacts : [...d.contacts, newContact],
       messages: [
         ...d.messages,
         {
           id: uid("m"),
           owner: user.id,
-          contact: contactId,
+          contact: contact.id,
           sender: "me",
           content: orderText,
           time: new Date().toLocaleTimeString([], {
@@ -2312,7 +2503,7 @@ function RateOfferModal({ user, save, close, setToast }) {
           From currency
           <select name="fromCurrency">
             {currencies.map((x) => (
-              <option key={x}>{x}</option>
+              <option key={x} value={x}>{currencyLabel(x)}</option>
             ))}
           </select>
         </label>
@@ -2320,7 +2511,7 @@ function RateOfferModal({ user, save, close, setToast }) {
           To currency
           <select name="toCurrency" defaultValue="ETB">
             {currencies.map((x) => (
-              <option key={x}>{x}</option>
+              <option key={x} value={x}>{currencyLabel(x)}</option>
             ))}
           </select>
         </label>
@@ -2386,22 +2577,89 @@ function RateOfferModal({ user, save, close, setToast }) {
 function Portal({ db, save, user, setToast, setPage }) {
   const [search, setSearch] = useState("");
   const [country, setCountry] = useState("All");
-  const contacts = db.contacts.filter((x) => x.owner === user.id);
-  const openPerson = (person) => {
-    setPage("home");
-    setToast(`Opening your conversation with ${person.name}`);
-  };
+  const [busyMember, setBusyMember] = useState(null);
+  const contacts = db.contacts.filter((contact) => contact.owner === user.id);
+  const directory = (db.communityDirectory || []).filter(
+    (profile) => profile.id !== user.id,
+  );
+  const incomingRequests = (db.contactRequests || []).filter(
+    (request) =>
+      request.recipient_id === user.id && request.status === "pending",
+  );
   const countriesInPortal = [
     "All",
-    ...new Set(contacts.map((x) => x.country).filter(Boolean)),
+    ...new Set(directory.map((profile) => profile.country).filter(Boolean)),
   ];
-  const visible = contacts.filter(
-    (x) =>
-      (x.name + x.phone + x.country)
+  const visible = directory.filter(
+    (profile) =>
+      `${profile.display_name} ${profile.username} ${profile.country}`
         .toLowerCase()
         .includes(search.toLowerCase()) &&
-      (country === "All" || x.country === country),
+      (country === "All" || profile.country === country),
   );
+  const profileToContact = (profile) => ({
+    id: `contact-${profile.id}`,
+    owner: user.id,
+    remoteUserId: profile.id,
+    name: profile.display_name,
+    username: profile.username,
+    phone: "",
+    country: profile.country || "Global",
+    profilePhoto: profile.avatar_url || null,
+    color: "#35a57a",
+    source: "request",
+    createdAt: new Date().toISOString(),
+  });
+  const requestContact = async (profile) => {
+    setBusyMember(profile.id);
+    try {
+      const request = await sendContactRequest(profile.id);
+      save((state) => ({
+        ...state,
+        contactRequests: [
+          request,
+          ...(state.contactRequests || []).filter(
+            (item) => item.id !== request.id,
+          ),
+        ],
+      }));
+      setToast(`Contact request sent to ${profile.display_name}`);
+    } catch (error) {
+      setToast(error.message);
+    } finally {
+      setBusyMember(null);
+    }
+  };
+  const respond = async (request, accept) => {
+    setBusyMember(request.id);
+    try {
+      await respondContactRequest(request.id, accept);
+      const profile = directory.find(
+        (item) => item.id === request.requester_id,
+      );
+      save((state) => ({
+        ...state,
+        contactRequests: (state.contactRequests || []).map((item) =>
+          item.id === request.id
+            ? { ...item, status: accept ? "accepted" : "rejected" }
+            : item,
+        ),
+        contacts:
+          accept &&
+          profile &&
+          !state.contacts.some(
+            (contact) => contact.remoteUserId === profile.id,
+          )
+            ? [...state.contacts, profileToContact(profile)]
+            : state.contacts,
+      }));
+      setToast(accept ? "Contact request accepted" : "Contact request rejected");
+    } catch (error) {
+      setToast(`Request update failed: ${error.message}`);
+    } finally {
+      setBusyMember(null);
+    }
+  };
   return (
     <div className="page portal-page">
       <section className="portal-hero">
@@ -2413,38 +2671,24 @@ function Portal({ db, save, user, setToast, setPage }) {
             <span>Chat with confidence.</span>
           </h1>
           <p>
-            Discover community members by name or location, add people you know,
-            and use built-in safety controls in every conversation.
+            Only members who choose to be visible appear here. Private members
+            can still share their secure contact QR directly.
           </p>
           <div className="portal-trust">
-            <span>
-              <Icon name="BadgeCheck" />
-              Verified profiles
-            </span>
-            <span>
-              <Icon name="ShieldAlert" />
-              Report & block controls
-            </span>
-            <span>
-              <Icon name="LockKeyhole" />
-              Private contact lists
-            </span>
+            <span><Icon name="BadgeCheck" />Verified profiles</span>
+            <span><Icon name="UserRoundCheck" />Request approval</span>
+            <span><Icon name="LockKeyhole" />Private contact lists</span>
           </div>
         </div>
-        <div className="portal-orbit">
-          <div className="orbit-center">
-            <Icon name="UsersRound" size={30} />
-          </div>
-          {contacts.slice(0, 4).map((x, i) => (
+        <div className="portal-orbit" aria-hidden="true">
+          <div className="orbit-center"><Icon name="UsersRound" size={30} /></div>
+          {directory.slice(0, 4).map((profile, index) => (
             <div
-              key={x.id}
-              className={`orbit-user orbit-${i + 1}`}
-              style={{ background: x.color }}
+              key={profile.id}
+              className={`orbit-user orbit-${index + 1}`}
+              style={{ background: "#35a57a" }}
             >
-              {x.name
-                .split(" ")
-                .map((n) => n[0])
-                .join("")}
+              {profile.display_name.split(" ").map((name) => name[0]).join("")}
             </div>
           ))}
         </div>
@@ -2454,68 +2698,100 @@ function Portal({ db, save, user, setToast, setPage }) {
           <Icon name="Search" />
           <input
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search people, username or city"
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="Search people, username or country"
           />
         </div>
         <select
           value={country}
-          onChange={(e) => setCountry(e.target.value)}
+          onChange={(event) => setCountry(event.target.value)}
           aria-label="Filter community by country"
         >
-          {countriesInPortal.map((x) => (
-            <option key={x}>{x}</option>
-          ))}
+          {countriesInPortal.map((item) => <option key={item}>{item}</option>)}
         </select>
       </div>
+      {incomingRequests.length > 0 && (
+        <section className="panel contact-request-panel">
+          <div className="panel-title">
+            <div><h2>Contact requests</h2><p>Approve only people you recognize.</p></div>
+            <span className="badge pending">{incomingRequests.length}</span>
+          </div>
+          <div className="contact-request-list">
+            {incomingRequests.map((request) => {
+              const profile = directory.find(
+                (item) => item.id === request.requester_id,
+              );
+              return (
+                <article key={request.id}>
+                  <UserAvatar person={{
+                    name: profile?.display_name || "DataChat member",
+                    profilePhoto: profile?.avatar_url,
+                    color: "#4c8ed9",
+                  }} />
+                  <div><b>{profile?.display_name || "DataChat member"}</b><small>@{profile?.username || "member"}</small></div>
+                  <button className="secondary" disabled={busyMember === request.id} onClick={() => respond(request, false)}>Reject</button>
+                  <button className="primary" disabled={busyMember === request.id} onClick={() => respond(request, true)}>Accept</button>
+                </article>
+              );
+            })}
+          </div>
+        </section>
+      )}
       <div className="member-grid">
-        {visible.map((person) => (
-          <article className="member-card" key={person.id}>
-            <div className="member-cover">
-              <span className="online-label">
-                <i />
-                Online
-              </span>
-            </div>
-            <div className="member-avatar" style={{ background: person.color }}>
-              {person.name
-                .split(" ")
-                .map((x) => x[0])
-                .join("")}
-            </div>
-            <div className="member-info">
-              <h3>
-              {person.name}
-                {person.remoteUserId && <Icon name="BadgeCheck" size={17} />}
-              </h3>
-              <span>
-                {person.phone} · {person.country}
-              </span>
-              <p>Trusted contact added by you.</p>
-              <button className="primary" onClick={() => openPerson(person)}>
-                <Icon name="MessageCircle" />
-                Open chat
-              </button>
-            </div>
-          </article>
-        ))}
+        {visible.map((profile) => {
+          const contact = contacts.find(
+            (item) => item.remoteUserId === profile.id,
+          );
+          const pending = (db.contactRequests || []).some(
+            (request) =>
+              request.requester_id === user.id &&
+              request.recipient_id === profile.id &&
+              request.status === "pending",
+          );
+          return (
+            <article className="member-card" key={profile.id}>
+              <div className="member-cover">
+                <span className="online-label"><i />Community</span>
+              </div>
+              <div className="member-avatar" style={{ background: "#35a57a" }}>
+                {profile.display_name.split(" ").map((name) => name[0]).join("")}
+              </div>
+              <div className="member-info">
+                <h3>{profile.display_name}<Icon name="BadgeCheck" size={17} /></h3>
+                <span>@{profile.username} · {profile.country}</span>
+                <p>{profile.plan === "Pro" ? "Verified Pro member" : "Community member"}</p>
+                <button
+                  className={contact ? "primary" : "secondary"}
+                  disabled={pending || busyMember === profile.id}
+                  onClick={() => {
+                    if (contact) {
+                      setPage("home");
+                      setToast(`Opening your conversation with ${contact.name}`);
+                    } else {
+                      requestContact(profile);
+                    }
+                  }}
+                >
+                  <Icon name={contact ? "MessageCircle" : "UserPlus"} />
+                  {contact ? "Open chat" : pending ? "Request sent" : "Add contact"}
+                </button>
+              </div>
+            </article>
+          );
+        })}
       </div>
       {!visible.length && (
         <Empty
           icon="Users"
-          title="No added contacts"
-          text="Scan a DataChat QR code or enter a contact code from Messages. Only contacts you add appear here."
+          title="No visible members"
+          text="No community members match this search. Hidden members can still be added using their QR code."
         />
       )}
       <div className="portal-notice">
         <Icon name="Info" />
         <div>
-          <b>Internet portal foundation</b>
-          <p>
-            This private portal shows only contacts you added. Other registered
-            accounts remain hidden until you scan their QR code or enter their
-            DataChat contact code.
-          </p>
+          <b>Visibility is controlled by each member</b>
+          <p>Hidden accounts never appear in discovery, but their exact DataChat QR remains usable.</p>
         </div>
       </div>
       <CommunityManager db={db} save={save} user={user} setToast={setToast} />
@@ -2842,11 +3118,21 @@ function Home({ db, save, user, setToast, setPage }) {
   const messagesRef = useRef(null);
   const recorderRef = useRef(null);
   const recordingChunksRef = useRef([]);
+  const recordingStartedRef = useRef(0);
   const [recording, setRecording] = useState(false);
   const c = contacts.find((x) => x.id === selected),
     msgs = db.messages.filter(
       (x) => x.owner === user.id && x.contact === selected,
     );
+  useEffect(() => {
+    document.body.dataset.datachatChatOpen = c ? "true" : "false";
+    const closeChat = () => setSelected(null);
+    window.addEventListener("datachat-close-chat", closeChat);
+    return () => {
+      delete document.body.dataset.datachatChatOpen;
+      window.removeEventListener("datachat-close-chat", closeChat);
+    };
+  }, [c]);
   const send = async (e) => {
     e.preventDefault();
     if (c?.blocked) return setToast("This member is blocked");
@@ -2958,16 +3244,52 @@ function Home({ db, save, user, setToast, setPage }) {
         stream.getTracks().forEach((track) => track.stop());
         const blob = new Blob(recordingChunksRef.current, { type: recorder.mimeType || "audio/webm" });
         if (!blob.size) return;
-        if (blob.size > 900000) return setToast("Voice message is too long. Keep recordings under about one minute.");
-        const voiceUrl = await new Promise((resolve) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.readAsDataURL(blob); });
-        const message = { id: c.remoteUserId ? crypto.randomUUID() : uid("m"), owner: user.id, contact: c.id, sender: "me", content: "Voice message", voiceUrl, voiceType: blob.type, time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) };
+        if (blob.size > 1400000) return setToast("Voice message is too long. Keep recordings under about one minute.");
+        const messageId = c.remoteUserId ? crypto.randomUUID() : uid("m");
+        const durationMs = Math.max(0, Date.now() - recordingStartedRef.current);
         try {
-          if (c.remoteUserId) await sendDirectMessage(c.remoteUserId, message);
+          let voiceUrl = URL.createObjectURL(blob);
+          let voicePath = null;
+          if (c.remoteUserId) {
+            const uploaded = await uploadVoiceMessage(
+              c.remoteUserId,
+              messageId,
+              blob,
+              durationMs,
+            );
+            voiceUrl = uploaded.voiceUrl;
+            voicePath = uploaded.voicePath;
+          }
+          const message = {
+            id: messageId,
+            owner: user.id,
+            contact: c.id,
+            sender: "me",
+            content: "Voice message",
+            voiceUrl,
+            voicePath,
+            voiceType: blob.type,
+            durationMs,
+            cloudMessage: Boolean(c.remoteUserId),
+            deliveryStatus: c.remoteUserId ? "sending" : "sent",
+            time: new Date().toLocaleTimeString([], {
+              hour: "2-digit",
+              minute: "2-digit",
+            }),
+          };
+          if (c.remoteUserId) {
+            await sendDirectMessage(c.remoteUserId, {
+              ...message,
+              voiceUrl: undefined,
+            });
+            message.deliveryStatus = "sent";
+          }
           save((d) => ({ ...d, messages: [...d.messages, message] }));
         } catch (error) { setToast(`Voice message not sent: ${error.message}`); }
       };
-      recorder.start(250);
+      recorder.start(500);
       recorderRef.current = recorder;
+      recordingStartedRef.current = Date.now();
       setRecording(true);
     } catch (error) { setToast(`Microphone unavailable: ${error.message}`); }
   };
@@ -3174,6 +3496,9 @@ function Home({ db, save, user, setToast, setPage }) {
           contact={report}
           messages={msgs}
           user={user}
+          rating={(db.customerRatings || []).find(
+            (item) => item.rated_user_id === report.remoteUserId,
+          )}
           save={save}
           setToast={setToast}
           close={() => setReport(null)}
@@ -3182,7 +3507,15 @@ function Home({ db, save, user, setToast, setPage }) {
     </div>
   );
 }
-function ReportUser({ contact, messages, user, save, setToast, close }) {
+function ReportUser({
+  contact,
+  messages,
+  user,
+  rating,
+  save,
+  setToast,
+  close,
+}) {
   const [submitted, setSubmitted] = useState(false);
   const submit = (e) => {
     e.preventDefault();
@@ -3211,6 +3544,46 @@ function ReportUser({ contact, messages, user, save, setToast, close }) {
     }));
     setSubmitted(true);
     setToast("Safety report submitted");
+  };
+  const submitRating = async (event) => {
+    event.preventDefault();
+    if (!contact.remoteUserId)
+      return setToast("Ratings require a registered DataChat contact.");
+    const form = new FormData(event.currentTarget);
+    try {
+      const savedRating = await saveCustomerRating(
+        contact.remoteUserId,
+        Number(form.get("rating")),
+        form.get("note"),
+      );
+      save((state) => ({
+        ...state,
+        customerRatings: [
+          ...(state.customerRatings || []).filter(
+            (item) => item.rated_user_id !== contact.remoteUserId,
+          ),
+          savedRating,
+        ],
+      }));
+      setToast("Your rating was saved.");
+    } catch (error) {
+      setToast(`Rating failed: ${error.message}`);
+    }
+  };
+  const removeRating = async () => {
+    if (!rating || !contact.remoteUserId) return;
+    try {
+      await deleteCustomerRating(contact.remoteUserId);
+      save((state) => ({
+        ...state,
+        customerRatings: (state.customerRatings || []).filter(
+          (item) => item.rated_user_id !== contact.remoteUserId,
+        ),
+      }));
+      setToast("Your rating was deleted.");
+    } catch (error) {
+      setToast(`Rating deletion failed: ${error.message}`);
+    }
   };
   return (
     <Modal title="Report or block member" close={close}>
@@ -3427,9 +3800,20 @@ function ContactModal({ user, save, close, setToast }) {
   const [scanError, setScanError] = useState(""),
     [busy, setBusy] = useState(false),
     fileRef = useRef(null);
-  const addRemoteProfile = (profile) => {
+  const addRemoteProfile = async (profile, contactCode) => {
     if (!profile) throw new Error("No DataChat account matches that code.");
     if (profile.id === user.id) throw new Error("You cannot add your own account.");
+    if (
+      cloudConfigured &&
+      !String(contactCode || profile.contact_code || "").trim()
+    )
+      throw new Error("The contact QR is incomplete.");
+    if (cloudConfigured) {
+      await addContactByQr(
+        profile.id,
+        contactCode || profile.contact_code,
+      );
+    }
     save((d) => {
       if (d.contacts.some((contact) => contact.remoteUserId === profile.id))
         return d;
@@ -3438,12 +3822,12 @@ function ContactModal({ user, save, close, setToast }) {
         contacts: [
           ...d.contacts,
           {
-            id: `cloud-${profile.id}`,
+            id: `contact-${profile.id}`,
             remoteUserId: profile.id,
             contactCode: profile.contact_code,
             owner: user.id,
             name: profile.display_name,
-            phone: `ID ${profile.contact_code}`,
+            phone: "",
             country: profile.country || "Global",
             color: ["#d7a62b", "#4c8ed9", "#8f69d8", "#35a57a"][d.contacts.length % 4],
             isOnline: true,
@@ -3458,8 +3842,13 @@ function ContactModal({ user, save, close, setToast }) {
     const payload = JSON.parse(value);
     if (payload.type !== "datachat-user-contact" || !payload.userId)
       throw new Error("This is not a DataChat user contact QR code.");
-    const profile = await findPublicProfile({ userId: payload.userId });
-    addRemoteProfile(profile);
+    if (!payload.contactCode)
+      throw new Error("This contact QR is missing its security code.");
+    const profile = await findPublicProfile({
+      userId: payload.userId,
+      contactCode: payload.contactCode,
+    });
+    await addRemoteProfile(profile, payload.contactCode);
   };
   const scanCamera = async () => {
     setBusy(true);
@@ -3500,17 +3889,29 @@ function ContactModal({ user, save, close, setToast }) {
       setScanError("");
       try {
         const profile = await findPublicProfile({ contactCode });
-        addRemoteProfile(profile);
+        await addRemoteProfile(profile, contactCode);
       } catch (error) {
         setScanError(error.message);
         setBusy(false);
       }
       return;
     }
-    save((d) => ({
-      ...d,
-      contacts: [
-        ...d.contacts,
+    save((d) => {
+      const phone = String(f.get("phone") || "").replace(/\s+/g, "");
+      if (
+        d.contacts.some(
+          (contact) =>
+            contact.owner === user.id &&
+            String(contact.phone || "").replace(/\s+/g, "") === phone,
+        )
+      ) {
+        setToast("This contact already exists.");
+        return d;
+      }
+      return {
+        ...d,
+        contacts: [
+          ...d.contacts,
         {
           id: uid("c"),
           owner: user.id,
@@ -3520,9 +3921,9 @@ function ContactModal({ user, save, close, setToast }) {
           color: ["#d7a62b", "#4c8ed9", "#8f69d8", "#35a57a"][
             d.contacts.length % 4
           ],
-        },
-      ],
-    }));
+        }],
+      };
+    });
     setToast("Contact added");
     close();
   };
@@ -3590,6 +3991,47 @@ function ContactModal({ user, save, close, setToast }) {
         </label>
         <button className="primary" disabled={busy}>{cloudConfigured ? "Add by contact code" : "Add contact"}</button>
       </form>
+      {contact.remoteUserId && (
+        <form className="form contact-rating-form" onSubmit={submitRating}>
+          <div className="panel-title">
+            <div>
+              <h3>Your private customer rating</h3>
+              <p>Saved permanently until you update or delete it.</p>
+            </div>
+          </div>
+          <label>
+            Rating
+            <select name="rating" defaultValue={rating?.rating || 5}>
+              <option value="5">5 · Excellent</option>
+              <option value="4">4 · Good</option>
+              <option value="3">3 · Fair</option>
+              <option value="2">2 · Poor</option>
+              <option value="1">1 · Very poor</option>
+            </select>
+          </label>
+          <label>
+            Private note
+            <textarea
+              name="note"
+              maxLength="500"
+              defaultValue={rating?.note || ""}
+              placeholder="Only you can see this note"
+            />
+          </label>
+          <div className="actions">
+            <button className="primary">
+              <Icon name="Star" />
+              {rating ? "Update rating" : "Save rating"}
+            </button>
+            {rating && (
+              <button type="button" className="secondary danger" onClick={removeRating}>
+                <Icon name="Trash2" />
+                Delete
+              </button>
+            )}
+          </div>
+        </form>
+      )}
     </Modal>
   );
 }
@@ -4054,7 +4496,7 @@ function TransactionChatCard({ message, db, save, user, setToast }) {
         `Transaction ${data.reference} already exists. No duplicate was added.`,
       );
     const record = {
-      id: `COPY-${data.reference}-${Date.now().toString(36).slice(-4)}`,
+      id: `IMPORTED-${message.id}`,
       owner: user.id,
       sender: data.sender,
       senderPhone: data.senderPhone,
@@ -4116,6 +4558,10 @@ function TransactionChatCard({ message, db, save, user, setToast }) {
         )}
         <dl>
           <div>
+            <dt>Sender</dt>
+            <dd>{data.sender}</dd>
+          </div>
+          <div>
             <dt>Receiver</dt>
             <dd>{data.receiver}</dd>
           </div>
@@ -4131,6 +4577,28 @@ function TransactionChatCard({ message, db, save, user, setToast }) {
               {data.from} → {data.to}
             </dd>
           </div>
+          <div>
+            <dt>Date</dt>
+            <dd>{data.date}</dd>
+          </div>
+          <div>
+            <dt>Status</dt>
+            <dd>{data.status}</dd>
+          </div>
+          <div>
+            <dt>Rate</dt>
+            <dd>{data.rate}</dd>
+          </div>
+          <div>
+            <dt>Category</dt>
+            <dd>{data.category}</dd>
+          </div>
+          {data.note && (
+            <div>
+              <dt>Note</dt>
+              <dd>{data.note}</dd>
+            </div>
+          )}
           <div>
             <dt>Security key</dt>
             <dd className="security-private">
@@ -4403,7 +4871,7 @@ function RecordModal({ record, user, save, close, setToast }) {
           Currency
           <select name="currency" defaultValue={record.currency || "USD"}>
             {currencies.map((x) => (
-              <option key={x}>{x}</option>
+              <option key={x} value={x}>{currencyLabel(x)}</option>
             ))}
           </select>
         </label>
@@ -5554,6 +6022,26 @@ function Settings({
       setToast(`Profile picture failed: ${error.message}`);
     }
   };
+  const changeCommunityVisibility = async (visible) => {
+    try {
+      if (cloudConfigured) await updateCommunityVisibility(visible);
+      save((state) => ({
+        ...state,
+        users: state.users.map((account) =>
+          account.id === user.id
+            ? { ...account, visibleInCommunity: visible }
+            : account,
+        ),
+      }));
+      setToast(
+        visible
+          ? "Your public profile is now visible in Community."
+          : "Your profile is hidden. Your QR code still works.",
+      );
+    } catch (error) {
+      setToast(`Visibility update failed: ${error.message}`);
+    }
+  };
   return (
     <div className="page settings">
       <Header
@@ -5623,6 +6111,26 @@ function Settings({
             >
               Open recovery
             </button>
+          </Setting>
+          <Setting
+            icon="UsersRound"
+            title="Community visibility"
+            text={
+              user.visibleInCommunity
+                ? "Members can discover your public name, username, country, and photo"
+                : "Hidden from discovery; people can still add you using your QR"
+            }
+          >
+            <label className="switch">
+              <input
+                type="checkbox"
+                checked={Boolean(user.visibleInCommunity)}
+                onChange={(event) =>
+                  changeCommunityVisibility(event.target.checked)
+                }
+              />
+              <span />
+            </label>
           </Setting>
         </section>
         <section className="panel">
@@ -5834,7 +6342,7 @@ function Settings({
             </div>
             <div>
               <dt>Version</dt>
-              <dd>1.0.0</dd>
+              <dd>1.3.0</dd>
             </div>
             <div>
               <dt>Plan</dt>
@@ -5842,18 +6350,9 @@ function Settings({
             </div>
             <div>
               <dt>Storage</dt>
-              <dd>Private local workspace</dd>
+              <dd>Private Supabase workspace</dd>
             </div>
           </dl>
-          <a
-            className="secondary full-btn"
-            href="/guide.html"
-            target="_blank"
-            rel="noreferrer"
-          >
-            <Icon name="BookOpen" />
-            Open user &amp; admin guide
-          </a>
           <button className="secondary danger full-btn" onClick={logout}>
             <Icon name="LogOut" />
             Sign out

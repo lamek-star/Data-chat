@@ -161,7 +161,8 @@ export default {
       (url.pathname === "/downloads/DataChat-latest.apk" ||
         url.pathname === "/downloads/DataChat.apk" ||
         url.pathname === "/downloads/DataChat-1.1.1.apk" ||
-        url.pathname === "/downloads/DataChat-1.2.0.apk")
+        url.pathname === "/downloads/DataChat-1.2.0.apk" ||
+        url.pathname === "/downloads/DataChat-1.3.0.apk")
     ) {
       const apk = await env.DOWNLOADS?.get("DataChat-latest.apk");
       if (!apk) return new Response("DataChat APK is not available.", { status: 404 });
@@ -175,6 +176,28 @@ export default {
       headers.set("ETag", apk.httpEtag);
       headers.set("Cache-Control", "public, max-age=3600");
       return new Response(request.method === "HEAD" ? null : apk.body, {
+        headers,
+      });
+    }
+    if (
+      (request.method === "GET" || request.method === "HEAD") &&
+      url.pathname === "/downloads/DataChat-1.3.0.aab"
+    ) {
+      const bundle = await env.DOWNLOADS?.get("DataChat-1.3.0.aab");
+      if (!bundle)
+        return new Response("DataChat app bundle is not available.", {
+          status: 404,
+        });
+      const headers = new Headers();
+      bundle.writeHttpMetadata(headers);
+      headers.set("Content-Type", "application/octet-stream");
+      headers.set(
+        "Content-Disposition",
+        'attachment; filename="DataChat-1.3.0.aab"',
+      );
+      headers.set("ETag", bundle.httpEtag);
+      headers.set("Cache-Control", "private, max-age=300");
+      return new Response(request.method === "HEAD" ? null : bundle.body, {
         headers,
       });
     }

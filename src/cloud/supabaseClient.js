@@ -356,22 +356,41 @@ export async function loadAppData(userId) {
 }
 
 export async function overwriteAppData(userId, records) {
-  const supabase = requireSupabase();
-  const { error: deleteError } = await supabase
-    .from("app_data")
-    .delete()
-    .eq("app_id", appId)
-    .eq("user_id", userId);
-  if (deleteError) throw deleteError;
-  if (!records || records.length === 0) return true;
-  const { error } = await supabase.from("app_data").insert(
-    records.map((record) => ({
+  const client = requireSupabase();
+  const normalized = (records || []).map((record) => ({
       app_id: appId,
       user_id: userId,
       ...record,
-    })),
+      updated_at: new Date().toISOString(),
+    }));
+  if (normalized.length) {
+    const { error } = await client.from("app_data").upsert(normalized, {
+      onConflict: "app_id,user_id,entity_type,entity_id",
+    });
+    if (error) throw error;
+  }
+  const { data: existing, error: readError } = await client
+    .from("app_data")
+    .select("entity_type,entity_id")
+    .eq("app_id", appId)
+    .eq("user_id", userId);
+  if (readError) throw readError;
+  const keep = new Set(
+    normalized.map((record) => `${record.entity_type}:${record.entity_id}`),
   );
-  if (error) throw error;
+  const stale = (existing || []).filter(
+    (record) => !keep.has(`${record.entity_type}:${record.entity_id}`),
+  );
+  for (const record of stale) {
+    const { error } = await client
+      .from("app_data")
+      .delete()
+      .eq("app_id", appId)
+      .eq("user_id", userId)
+      .eq("entity_type", record.entity_type)
+      .eq("entity_id", record.entity_id);
+    if (error) throw error;
+  }
   return true;
 }
 
@@ -426,15 +445,12 @@ export async function upsertPublicProfile(user) {
 
 export async function findPublicProfile({ userId, contactCode }) {
   const client = requireSupabase();
-  let query = client
-    .from("profiles")
-    .select("id, display_name, username, contact_code, country, phone, avatar_url, plan, status, email_verified");
-  query = userId
-    ? query.eq("id", userId)
-    : query.eq("contact_code", String(contactCode || "").trim().toUpperCase());
-  const { data, error } = await query.maybeSingle();
+  const { data, error } = await client.rpc("resolve_datachat_contact", {
+    requested_user_id: userId || null,
+    requested_contact_code: contactCode || null,
+  });
   if (error) throw error;
-  return data;
+  return data?.[0] || null;
 }
 
 export async function loadDirectMessages(userId) {
@@ -453,10 +469,222 @@ export async function loadPublicProfiles(userIds) {
   const client = requireSupabase();
   const { data, error } = await client
     .from("profiles")
-    .select("id, display_name, username, contact_code, country, phone, avatar_url, plan, status, email_verified")
+    .select("id, display_name, username, contact_code, country, avatar_url, plan, status, email_verified,visible_in_community")
     .in("id", [...new Set(userIds)]);
   if (error) throw error;
   return data || [];
+}
+
+export async function updateCommunityVisibility(visible) {
+  const client = requireSupabase();
+  const { data: authData } = await client.auth.getUser();
+  if (!authData.user) throw new Error("Sign in again.");
+  const { data, error } = await client
+    .from("profiles")
+    .update({
+      visible_in_community: Boolean(visible),
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", authData.user.id)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function loadCommunityDirectory() {
+  const client = requireSupabase();
+  const { data, error } = await client
+    .from("profiles")
+    .select(
+      "id,display_name,username,country,avatar_url,plan,status,visible_in_community",
+    )
+    .eq("visible_in_community", true)
+    .eq("status", "active")
+    .order("display_name");
+  if (error) throw error;
+  return data || [];
+}
+
+export async function loadContactNetwork() {
+  const client = requireSupabase();
+  const [{ data: authData }, contactResult, requestResult, ratingResult] =
+    await Promise.all([
+      client.auth.getUser(),
+      client
+        .from("user_contacts")
+        .select("owner_id,contact_user_id,source,created_at"),
+      client
+        .from("contact_requests")
+        .select(
+          "id,requester_id,recipient_id,status,created_at,responded_at",
+        )
+        .order("created_at", { ascending: false }),
+      client
+        .from("customer_ratings")
+        .select(
+          "owner_id,rated_user_id,rating,note,created_at,updated_at",
+        ),
+    ]);
+  if (!authData.user) throw new Error("Sign in again.");
+  if (contactResult.error) throw contactResult.error;
+  if (requestResult.error) throw requestResult.error;
+  if (ratingResult.error) throw ratingResult.error;
+  const peerIds = [
+    ...(contactResult.data || []).map((item) => item.contact_user_id),
+    ...(requestResult.data || []).flatMap((item) => [
+      item.requester_id,
+      item.recipient_id,
+    ]),
+  ].filter((id) => id && id !== authData.user.id);
+  const profiles = await loadPublicProfiles(peerIds);
+  return {
+    userId: authData.user.id,
+    contacts: contactResult.data || [],
+    requests: requestResult.data || [],
+    ratings: ratingResult.data || [],
+    profiles,
+  };
+}
+
+export async function sendContactRequest(recipientId) {
+  const client = requireSupabase();
+  const { data, error } = await client.rpc("request_datachat_contact", {
+    requested_recipient_id: recipientId,
+  });
+  if (error) throw error;
+  return data;
+}
+
+export async function respondContactRequest(requestId, accept) {
+  const client = requireSupabase();
+  const { data, error } = await client.rpc(
+    "respond_datachat_contact_request",
+    {
+      requested_request_id: requestId,
+      requested_accept: Boolean(accept),
+    },
+  );
+  if (error) throw error;
+  return data;
+}
+
+export async function addContactByQr(userId, contactCode) {
+  const client = requireSupabase();
+  const { data, error } = await client.rpc("add_datachat_contact_by_qr", {
+    requested_user_id: userId,
+    requested_contact_code: String(contactCode || "").trim().toUpperCase(),
+  });
+  if (error) throw error;
+  return data;
+}
+
+export async function removeCloudContact(contactUserId) {
+  const client = requireSupabase();
+  const { error } = await client
+    .from("user_contacts")
+    .delete()
+    .eq("contact_user_id", contactUserId);
+  if (error) throw error;
+  return true;
+}
+
+export async function saveCustomerRating(ratedUserId, rating, note = "") {
+  const client = requireSupabase();
+  const { data: authData } = await client.auth.getUser();
+  if (!authData.user) throw new Error("Sign in again.");
+  const { data, error } = await client
+    .from("customer_ratings")
+    .upsert(
+      {
+        owner_id: authData.user.id,
+        rated_user_id: ratedUserId,
+        rating,
+        note: String(note || "").trim(),
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "owner_id,rated_user_id" },
+    )
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function deleteCustomerRating(ratedUserId) {
+  const client = requireSupabase();
+  const { error } = await client
+    .from("customer_ratings")
+    .delete()
+    .eq("rated_user_id", ratedUserId);
+  if (error) throw error;
+  return true;
+}
+
+export async function uploadVoiceMessage(
+  recipientId,
+  messageId,
+  blob,
+  durationMs,
+) {
+  const client = requireSupabase();
+  const { data: authData } = await client.auth.getUser();
+  if (!authData.user) throw new Error("Sign in again.");
+  const extension = blob.type.includes("mp4")
+    ? "m4a"
+    : blob.type.includes("ogg")
+      ? "ogg"
+      : "webm";
+  const path = `${authData.user.id}/${messageId}.${extension}`;
+  const { error: uploadError } = await client.storage
+    .from("voice-messages")
+    .upload(path, blob, {
+      upsert: false,
+      contentType: blob.type || "audio/webm",
+      cacheControl: "86400",
+    });
+  if (uploadError) throw uploadError;
+  const { error: metadataError } = await client.from("voice_messages").insert({
+    id: messageId,
+    sender_id: authData.user.id,
+    recipient_id: recipientId,
+    object_path: path,
+    mime_type: blob.type || "audio/webm",
+    byte_size: blob.size,
+    duration_ms: durationMs || null,
+  });
+  if (metadataError) {
+    await client.storage.from("voice-messages").remove([path]);
+    throw metadataError;
+  }
+  const { data, error } = await client.storage
+    .from("voice-messages")
+    .createSignedUrl(path, 3600);
+  if (error) throw error;
+  return { voicePath: path, voiceUrl: data.signedUrl };
+}
+
+export async function createVoicePlaybackUrl(path) {
+  if (!path) return null;
+  const client = requireSupabase();
+  const { data, error } = await client.storage
+    .from("voice-messages")
+    .createSignedUrl(path, 3600);
+  if (error) throw error;
+  return data.signedUrl;
+}
+
+export async function loadAdminOperationalSnapshot(username, password) {
+  const client = requireSupabase();
+  const { data, error } = await client.rpc(
+    "datachat_admin_operational_snapshot",
+    {
+      requested_username: username,
+      requested_password: password,
+    },
+  );
+  if (error) throw error;
+  return data || {};
 }
 
 export async function uploadProfilePhoto(userId, file) {
@@ -484,13 +712,23 @@ export async function sendDirectMessage(recipientId, message) {
   const client = requireSupabase();
   const { data: authData, error: authError } = await client.auth.getUser();
   if (authError || !authData.user) throw authError || new Error("Sign in again.");
+  const payload = {
+    version: 2,
+    content: String(message.content || "").slice(0, 4000),
+    time: message.time,
+    transaction: message.transaction || undefined,
+    recordId: message.recordId || undefined,
+    voicePath: message.voicePath || undefined,
+    voiceType: message.voiceType || undefined,
+    durationMs: message.durationMs || undefined,
+  };
   const { data, error } = await client
     .from("direct_messages")
     .insert({
       id: message.id,
       sender_id: authData.user.id,
       recipient_id: recipientId,
-      payload: message,
+      payload,
     })
     .select()
     .single();
@@ -505,6 +743,23 @@ export function subscribeToDirectMessages(callback) {
     .on(
       "postgres_changes",
       { event: "INSERT", schema: "public", table: "direct_messages" },
+      callback,
+    )
+    .subscribe();
+}
+
+export function subscribeToContactNetwork(callback) {
+  const client = requireSupabase();
+  return client
+    .channel(`datachat-contact-network-${crypto.randomUUID()}`)
+    .on(
+      "postgres_changes",
+      { event: "*", schema: "public", table: "contact_requests" },
+      callback,
+    )
+    .on(
+      "postgres_changes",
+      { event: "*", schema: "public", table: "user_contacts" },
       callback,
     )
     .subscribe();

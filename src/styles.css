@@ -33,6 +33,13 @@ textarea {
 button {
   cursor: pointer;
 }
+button,
+a,
+input,
+select,
+textarea {
+  touch-action: manipulation;
+}
 button:focus-visible,
 input:focus-visible,
 select:focus-visible,
@@ -44,6 +51,7 @@ textarea:focus-visible {
   display: grid;
   grid-template-columns: 238px 1fr;
   min-height: 100vh;
+  min-height: 100dvh;
 }
 aside {
   position: fixed;
@@ -2993,6 +3001,122 @@ dd {
 .contact-send .primary:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+.app-loading {
+  min-height: 100dvh;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 10px;
+  padding: max(24px, env(safe-area-inset-top))
+    max(24px, env(safe-area-inset-right))
+    max(24px, env(safe-area-inset-bottom))
+    max(24px, env(safe-area-inset-left));
+  color: var(--text);
+  background: radial-gradient(circle at 50% 35%, #17304f 0, #07101f 42%);
+}
+.app-loading img {
+  width: 74px;
+  height: 74px;
+  border-radius: 22px;
+  box-shadow: 0 14px 40px #0008;
+  animation: loading-pulse 1.4s ease-in-out infinite;
+}
+.app-loading b { font-size: 1.4rem; }
+.app-loading span { color: var(--muted); }
+@keyframes loading-pulse {
+  50% { opacity: .72; transform: translateY(-2px); }
+}
+
+.contact-request-panel { margin-bottom: 18px; }
+.contact-request-list { display: grid; gap: 10px; }
+.contact-request-list article {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: #0a1829;
+}
+.contact-request-list article > div:nth-child(2) {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+.contact-request-list small { color: var(--muted); }
+.contact-rating-form {
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+}
+
+.admin-operations {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+.admin-operations article {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 82px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: #0a1727;
+}
+.admin-operations article > svg { color: var(--gold2); }
+.admin-operations span { display: grid; gap: 2px; }
+.admin-operations b { font-size: 1.35rem; }
+.admin-operations small { color: var(--muted); }
+
+.bubble {
+  max-width: min(78%, 560px);
+  padding: 9px 12px 7px;
+  border-radius: 16px;
+  box-shadow: 0 1px 2px #0004;
+  transition: background-color 180ms ease, box-shadow 180ms ease;
+  overflow-wrap: anywhere;
+}
+.bubble.me { border-bottom-right-radius: 5px; }
+.bubble.them { border-bottom-left-radius: 5px; }
+.bubble small {
+  display: block;
+  margin-top: 4px;
+  text-align: right;
+  opacity: .72;
+}
+.voice-message {
+  width: min(290px, 66vw);
+  height: 38px;
+}
+.composer {
+  padding-bottom: max(10px, env(safe-area-inset-bottom));
+  backdrop-filter: blur(16px);
+}
+.composer input[name="message"] {
+  min-height: 46px;
+  font-size: 16px;
+}
+
+@media (max-width: 760px) {
+  .contact-request-list article {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+  .contact-request-list article .secondary,
+  .contact-request-list article .primary {
+    min-height: 44px;
+  }
+  .admin-operations { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .bubble { max-width: 88%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-loading img { animation: none; }
+  .bubble, .member-card, .transaction-message { transition: none !important; }
 }
 
 .avatar.has-photo {
