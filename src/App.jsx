@@ -43,6 +43,7 @@ import {
   sendDirectMessage,
   subscribeToDirectMessages,
   subscribeToContactNetwork,
+  subscribeToCommunityNetwork,
   unsubscribeChannel,
   uploadProfilePhoto,
   loadCloudCommunities,
@@ -393,12 +394,31 @@ async function loadCloudDb(authUser) {
   cloudDb.contactRequests = contactNetwork.requests || [];
   cloudDb.customerRatings = contactNetwork.ratings || [];
   cloudDb.communityDirectory = communityDirectory || [];
+  try {
+    const deviceNotifications = JSON.parse(
+      localStorage.getItem(`dc-notifications-${authUser.id}`) || "[]",
+    );
+    const existingNotificationIds = new Set(
+      cloudDb.notifications.map((item) => item.id),
+    );
+    cloudDb.notifications = [
+      ...deviceNotifications.filter(
+        (item) => !existingNotificationIds.has(item.id),
+      ),
+      ...cloudDb.notifications,
+    ].slice(0, 100);
+  } catch {
+    // Ignore damaged device notification cache.
+  }
   const contactByRemoteId = new Map(
     cloudDb.contacts
       .filter((contact) => contact.remoteUserId)
       .map((contact) => [contact.remoteUserId, contact]),
   );
   const knownMessageIds = new Set(cloudDb.messages.map((message) => message.id));
+  const knownNotificationMessages = new Set(
+    cloudDb.notifications.map((item) => item.messageId).filter(Boolean),
+  );
   for (const row of remoteMessages) {
     if (knownMessageIds.has(row.id)) continue;
     const peerId = row.sender_id === authUser.id ? row.recipient_id : row.sender_id;
@@ -422,7 +442,26 @@ async function loadCloudDb(authUser) {
           minute: "2-digit",
         }),
     });
+    if (
+      row.sender_id !== authUser.id &&
+      !knownNotificationMessages.has(row.id)
+    ) {
+      cloudDb.notifications.unshift({
+        id: `notification-${row.id}`,
+        owner: authUser.id,
+        title: `New message from ${contact.name}`,
+        messageId: row.id,
+        createdAt: row.created_at || new Date().toISOString(),
+        read: false,
+      });
+      knownNotificationMessages.add(row.id);
+    }
   }
+  cloudDb.notifications = cloudDb.notifications.slice(0, 100);
+  localStorage.setItem(
+    `dc-notifications-${authUser.id}`,
+    JSON.stringify(cloudDb.notifications),
+  );
   return cloudDb;
 }
 
@@ -705,6 +744,16 @@ function parseCsvRows(text) {
 }
 async function requestNotificationPermission() {
   if (isNativeApp()) {
+    if (Capacitor.getPlatform() === "android") {
+      await LocalNotifications.createChannel({
+        id: "datachat-messages",
+        name: "DataChat messages",
+        description: "New messages, transactions, and voice messages",
+        importance: 5,
+        visibility: 1,
+        vibration: true,
+      });
+    }
     const current = await LocalNotifications.checkPermissions();
     const result =
       current.display === "granted"
@@ -719,13 +768,23 @@ async function notifyIncomingMessage(senderName, message) {
   const title = `New message from ${senderName || "DataChat contact"}`;
   const body = message?.transaction
     ? `Transaction ${message.transaction.reference || "record"} received`
-    : message?.voiceUrl
+    : message?.voicePath || message?.voiceUrl
       ? "Voice message received"
       : String(message?.content || "Open DataChat to view the message").slice(
           0,
           140,
         );
   if (isNativeApp()) {
+    if (Capacitor.getPlatform() === "android") {
+      await LocalNotifications.createChannel({
+        id: "datachat-messages",
+        name: "DataChat messages",
+        description: "New messages, transactions, and voice messages",
+        importance: 5,
+        visibility: 1,
+        vibration: true,
+      });
+    }
     const permission = await LocalNotifications.checkPermissions();
     if (permission.display !== "granted") return false;
     await LocalNotifications.schedule({
@@ -734,7 +793,9 @@ async function notifyIncomingMessage(senderName, message) {
           id: Math.floor(Date.now() % 2147483647),
           title,
           body,
-          schedule: { at: new Date(Date.now() + 250) },
+          channelId: "datachat-messages",
+          schedule: { at: new Date(Date.now() + 750) },
+          sound: "default",
           extra: { page: "home" },
         },
       ],
@@ -746,6 +807,40 @@ async function notifyIncomingMessage(senderName, message) {
     return true;
   }
   return false;
+}
+
+const outgoingQueueKey = (userId) => `dc-outgoing-v2-${userId}`;
+function readOutgoingQueue(userId) {
+  try {
+    return JSON.parse(localStorage.getItem(outgoingQueueKey(userId)) || "[]");
+  } catch {
+    return [];
+  }
+}
+function writeOutgoingQueue(userId, queue) {
+  localStorage.setItem(outgoingQueueKey(userId), JSON.stringify(queue.slice(-100)));
+}
+function queueOutgoingMessage(userId, recipientId, message) {
+  const queue = readOutgoingQueue(userId);
+  if (!queue.some((item) => item.message.id === message.id)) {
+    queue.push({
+      recipientId,
+      message: {
+        id: message.id,
+        content: message.content,
+        time: message.time,
+        transaction: message.transaction,
+        recordId: message.recordId,
+        voicePath: message.voicePath,
+        voiceType: message.voiceType,
+        durationMs: message.durationMs,
+      },
+      attempts: 0,
+      queuedAt: new Date().toISOString(),
+    });
+    writeOutgoingQueue(userId, queue);
+  }
+  window.dispatchEvent(new Event("datachat-flush-outgoing"));
 }
 function App() {
   const [db, setDb] = useState(load),
@@ -820,6 +915,83 @@ function App() {
     return () => {
       active = false;
     };
+  }, [cloudAuthUser]);
+
+  useEffect(() => {
+    if (!isNativeApp()) return;
+    let actionListener;
+    LocalNotifications.addListener(
+      "localNotificationActionPerformed",
+      () => setPage("home"),
+    ).then((handle) => {
+      actionListener = handle;
+    });
+    return () => actionListener?.remove();
+  }, []);
+
+  useEffect(() => {
+    if (!cloudConfigured || !cloudAuthUser) return;
+    let flushing = false;
+    const flush = async () => {
+      if (flushing || navigator.onLine === false) return;
+      const queued = readOutgoingQueue(cloudAuthUser.id);
+      if (!queued.length) return;
+      flushing = true;
+      const remaining = [];
+      for (const item of queued) {
+        try {
+          await sendDirectMessage(item.recipientId, item.message);
+          setDb((current) => ({
+            ...current,
+            messages: current.messages.map((message) =>
+              message.id === item.message.id
+                ? { ...message, deliveryStatus: "sent" }
+                : message,
+            ),
+          }));
+        } catch {
+          remaining.push({ ...item, attempts: (item.attempts || 0) + 1 });
+          if (navigator.onLine === false) {
+            remaining.push(...queued.slice(queued.indexOf(item) + 1));
+            break;
+          }
+        }
+      }
+      const attemptedIds = new Set(queued.map((item) => item.message.id));
+      const newlyQueued = readOutgoingQueue(cloudAuthUser.id).filter(
+        (item) => !attemptedIds.has(item.message.id),
+      );
+      writeOutgoingQueue(cloudAuthUser.id, [...remaining, ...newlyQueued]);
+      flushing = false;
+    };
+    const interval = window.setInterval(flush, 12000);
+    window.addEventListener("online", flush);
+    window.addEventListener("datachat-flush-outgoing", flush);
+    flush();
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("online", flush);
+      window.removeEventListener("datachat-flush-outgoing", flush);
+    };
+  }, [cloudAuthUser]);
+
+  useEffect(() => {
+    if (!cloudConfigured || !cloudAuthUser) return;
+    let refreshing = false;
+    const refreshCommunities = async () => {
+      if (refreshing) return;
+      refreshing = true;
+      try {
+        const communities = await loadCloudCommunities();
+        setDb((current) => ({ ...current, communities }));
+      } catch (error) {
+        setToast(`Community refresh failed: ${error.message}`);
+      } finally {
+        refreshing = false;
+      }
+    };
+    const channel = subscribeToCommunityNetwork(refreshCommunities);
+    return () => unsubscribeChannel(channel);
   }, [cloudAuthUser]);
 
   useEffect(() => {
@@ -929,22 +1101,27 @@ function App() {
             }),
         };
         notifyIncomingMessage(contact.name, incoming).catch(() => {});
+        const nextNotifications = [
+          {
+            id: `notification-${row.id}`,
+            owner: cloudAuthUser.id,
+            title: `New message from ${contact.name}`,
+            messageId: row.id,
+            createdAt: row.created_at || new Date().toISOString(),
+            read: false,
+          },
+          ...(current.notifications || []).filter(
+            (item) => item.messageId !== row.id,
+          ),
+        ].slice(0, 100);
+        localStorage.setItem(
+          `dc-notifications-${cloudAuthUser.id}`,
+          JSON.stringify(nextNotifications),
+        );
         return {
           ...current,
           messages: [...current.messages, incoming],
-          notifications: [
-            {
-              id: `notification-${row.id}`,
-              owner: cloudAuthUser.id,
-              title: `New message from ${contact.name}`,
-              messageId: row.id,
-              createdAt: row.created_at || new Date().toISOString(),
-              read: false,
-            },
-            ...(current.notifications || []).filter(
-              (item) => item.messageId !== row.id,
-            ),
-          ],
+          notifications: nextNotifications,
         };
       });
     };
@@ -2803,7 +2980,9 @@ function CommunityManager({ db, save, user, setToast }) {
   const [manage, setManage] = useState(null);
   const communities = db.communities || [];
   const eligibleParents = communities.filter(
-    (x) => x.permissions?.allowSubgroups,
+    (x) =>
+      x.permissions?.allowSubgroups &&
+      (x.members || []).includes(user.id),
   );
   const createGroup = async (e) => {
     e.preventDefault();
@@ -2814,7 +2993,7 @@ function CommunityManager({ db, save, user, setToast }) {
     const f = Object.fromEntries(new FormData(e.currentTarget));
     const parent = communities.find((x) => x.id === f.parentId);
     if (!parent)
-      return setToast("Choose an administrator-created parent community");
+      return setToast("Join an approved parent community before creating a group.");
     const group = {
       id: uid("community"),
       name: f.name,
@@ -2906,8 +3085,8 @@ function CommunityManager({ db, save, user, setToast }) {
           <span className="eyebrow">COMMUNITY HIERARCHY</span>
           <h2>Your communities</h2>
           <p>
-            Create a local group beneath an approved parent community, then
-            invite trusted contacts.
+            Join a root community, wait for administrator approval, then create
+            a local group beneath it.
           </p>
         </div>
         <button
@@ -2924,6 +3103,9 @@ function CommunityManager({ db, save, user, setToast }) {
         </button>
         {user.plan !== "Pro" && (
           <small>Community creation is available to verified Pro members.</small>
+        )}
+        {user.plan === "Pro" && !eligibleParents.length && (
+          <small>Request access to a root community before creating a subgroup.</small>
         )}
       </div>
       <div className="community-tree">
@@ -3114,12 +3296,14 @@ function Home({ db, save, user, setToast, setPage }) {
     [search, setSearch] = useState(""),
     [add, setAdd] = useState(false),
     [report, setReport] = useState(null),
-    [attachments, setAttachments] = useState(false);
+    [attachments, setAttachments] = useState(false),
+    [showNotifications, setShowNotifications] = useState(false);
   const messagesRef = useRef(null);
   const recorderRef = useRef(null);
   const recordingChunksRef = useRef([]);
   const recordingStartedRef = useRef(0);
   const [recording, setRecording] = useState(false);
+  const [online, setOnline] = useState(navigator.onLine !== false);
   const c = contacts.find((x) => x.id === selected),
     msgs = db.messages.filter(
       (x) => x.owner === user.id && x.contact === selected,
@@ -3133,6 +3317,16 @@ function Home({ db, save, user, setToast, setPage }) {
       window.removeEventListener("datachat-close-chat", closeChat);
     };
   }, [c]);
+  useEffect(() => {
+    const connected = () => setOnline(true);
+    const disconnected = () => setOnline(false);
+    window.addEventListener("online", connected);
+    window.addEventListener("offline", disconnected);
+    return () => {
+      window.removeEventListener("online", connected);
+      window.removeEventListener("offline", disconnected);
+    };
+  }, []);
   const send = async (e) => {
     e.preventDefault();
     if (c?.blocked) return setToast("This member is blocked");
@@ -3157,6 +3351,18 @@ function Home({ db, save, user, setToast, setPage }) {
       messages: [...d.messages, message],
     }));
     if (c?.remoteUserId) {
+      if (navigator.onLine === false) {
+        queueOutgoingMessage(user.id, c.remoteUserId, message);
+        save((d) => ({
+          ...d,
+          messages: d.messages.map((item) =>
+            item.id === message.id
+              ? { ...item, deliveryStatus: "queued" }
+              : item,
+          ),
+        }));
+        return setToast("Message queued. It will send when a connection returns.");
+      }
       try {
         await sendDirectMessage(c.remoteUserId, message);
         save((d) => ({
@@ -3168,15 +3374,16 @@ function Home({ db, save, user, setToast, setPage }) {
           ),
         }));
       } catch (error) {
+        queueOutgoingMessage(user.id, c.remoteUserId, message);
         save((d) => ({
           ...d,
           messages: d.messages.map((item) =>
             item.id === message.id
-              ? { ...item, deliveryStatus: "failed" }
+              ? { ...item, deliveryStatus: "queued" }
               : item,
           ),
         }));
-        setToast(`Message not sent: ${error.message}`);
+        setToast(`Weak connection: message queued for automatic retry.`);
       }
     }
   };
@@ -3205,6 +3412,18 @@ function Home({ db, save, user, setToast, setPage }) {
     }));
     setAttachments(false);
     if (c.remoteUserId) {
+      if (navigator.onLine === false) {
+        queueOutgoingMessage(user.id, c.remoteUserId, message);
+        save((d) => ({
+          ...d,
+          messages: d.messages.map((item) =>
+            item.id === message.id
+              ? { ...item, deliveryStatus: "queued" }
+              : item,
+          ),
+        }));
+        return setToast("Transaction queued until the connection returns.");
+      }
       try {
         await sendDirectMessage(c.remoteUserId, message);
         save((d) => ({
@@ -3216,15 +3435,16 @@ function Home({ db, save, user, setToast, setPage }) {
           ),
         }));
       } catch (error) {
+        queueOutgoingMessage(user.id, c.remoteUserId, message);
         save((d) => ({
           ...d,
           messages: d.messages.map((item) =>
             item.id === message.id
-              ? { ...item, deliveryStatus: "failed" }
+              ? { ...item, deliveryStatus: "queued" }
               : item,
           ),
         }));
-        setToast(`Transaction not sent: ${error.message}`);
+        setToast("Weak connection: transaction queued for automatic retry.");
         return;
       }
     }
@@ -3234,9 +3454,18 @@ function Home({ db, save, user, setToast, setPage }) {
     if (user.plan !== "Pro") return setToast("Voice messages are available with DataChat Pro");
     if (!c || c.blocked) return;
     if (recording) return recorderRef.current?.stop();
+    if (c.remoteUserId && navigator.onLine === false)
+      return setToast("Connect briefly to upload a compressed voice message.");
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const recorder = new MediaRecorder(stream, { mimeType: MediaRecorder.isTypeSupported("audio/webm") ? "audio/webm" : undefined });
+      const preferredType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+        ? "audio/webm;codecs=opus"
+        : MediaRecorder.isTypeSupported("audio/webm")
+          ? "audio/webm"
+          : "";
+      const recorderOptions = { audioBitsPerSecond: 20000 };
+      if (preferredType) recorderOptions.mimeType = preferredType;
+      const recorder = new MediaRecorder(stream, recorderOptions);
       recordingChunksRef.current = [];
       recorder.ondataavailable = (event) => event.data.size && recordingChunksRef.current.push(event.data);
       recorder.onstop = async () => {
@@ -3278,19 +3507,29 @@ function Home({ db, save, user, setToast, setPage }) {
             }),
           };
           if (c.remoteUserId) {
-            await sendDirectMessage(c.remoteUserId, {
-              ...message,
-              voiceUrl: undefined,
-            });
-            message.deliveryStatus = "sent";
+            try {
+              await sendDirectMessage(c.remoteUserId, {
+                ...message,
+                voiceUrl: undefined,
+              });
+              message.deliveryStatus = "sent";
+            } catch {
+              queueOutgoingMessage(user.id, c.remoteUserId, message);
+              message.deliveryStatus = "queued";
+            }
           }
           save((d) => ({ ...d, messages: [...d.messages, message] }));
+          if (message.deliveryStatus === "queued")
+            setToast("Voice message uploaded and queued for delivery.");
         } catch (error) { setToast(`Voice message not sent: ${error.message}`); }
       };
       recorder.start(500);
       recorderRef.current = recorder;
       recordingStartedRef.current = Date.now();
       setRecording(true);
+      window.setTimeout(() => {
+        if (recorder.state === "recording") recorder.stop();
+      }, 45000);
     } catch (error) { setToast(`Microphone unavailable: ${error.message}`); }
   };
   useEffect(() => {
@@ -3304,11 +3543,22 @@ function Home({ db, save, user, setToast, setPage }) {
       <div className={"contact-pane " + (c ? "has-chat" : "")}>
         <Header
           title="Messages"
-          sub={`${contacts.length} trusted contacts`}
+          sub={
+            online
+              ? `${contacts.length} trusted contacts · Low-data mode`
+              : "Offline · messages will send automatically"
+          }
           actions={
             <>
-              <button className="icon-btn" aria-label="Notifications">
+              <button
+                className="icon-btn notification-button"
+                aria-label="Notifications"
+                onClick={() => setShowNotifications(true)}
+              >
                 <Icon name="Bell" />
+                {(db.notifications || []).some(
+                  (item) => item.owner === user.id && !item.read,
+                ) && <span aria-label="Unread notifications" />}
               </button>
               <MyContactQr user={user} setToast={setToast} />
               <button className="primary compact" onClick={() => setAdd(true)}>
@@ -3318,6 +3568,12 @@ function Home({ db, save, user, setToast, setPage }) {
             </>
           }
         />
+        {!online && (
+          <div className="offline-banner">
+            <Icon name="WifiOff" />
+            Very weak or no connection. Text messages stay safely queued.
+          </div>
+        )}
         <div className="ad">
           <img
             src="/assets/datachat-transfer-ad.webp"
@@ -3413,7 +3669,11 @@ function Home({ db, save, user, setToast, setPage }) {
                   />
                 ) : (
                   <div key={m.id} className={"bubble " + m.sender}>
-                    {m.voiceUrl ? <audio className="voice-message" controls preload="metadata" src={m.voiceUrl}>Voice message</audio> : m.content}
+                    {m.voicePath || m.voiceUrl ? (
+                      <VoiceMessage message={m} />
+                    ) : (
+                      m.content
+                    )}
                     <small>{m.time}{m.sender === "me" && m.deliveryStatus ? ` · ${m.deliveryStatus}` : ""}</small>
                   </div>
                 ),
@@ -3491,6 +3751,57 @@ function Home({ db, save, user, setToast, setPage }) {
           setToast={setToast}
         />
       )}
+      {showNotifications && (
+        <Modal
+          title="Message notifications"
+          close={() => setShowNotifications(false)}
+        >
+          <div className="notification-list">
+            {(db.notifications || [])
+              .filter((item) => item.owner === user.id)
+              .slice(0, 50)
+              .map((item) => (
+                <button
+                  key={item.id}
+                  className={item.read ? "" : "unread"}
+                  onClick={() => {
+                    save((current) => {
+                      const notifications = (current.notifications || []).map(
+                        (notification) =>
+                          notification.id === item.id
+                            ? { ...notification, read: true }
+                            : notification,
+                      );
+                      localStorage.setItem(
+                        `dc-notifications-${user.id}`,
+                        JSON.stringify(notifications.slice(0, 100)),
+                      );
+                      return { ...current, notifications };
+                    });
+                    setShowNotifications(false);
+                  }}
+                >
+                  <Icon name="MessageCircle" />
+                  <span>
+                    <b>{item.title || "New DataChat message"}</b>
+                    <small>
+                      {new Date(item.createdAt).toLocaleString()}
+                    </small>
+                  </span>
+                </button>
+              ))}
+            {!(db.notifications || []).some(
+              (item) => item.owner === user.id,
+            ) && (
+              <Empty
+                icon="Bell"
+                title="No notifications"
+                text="New messages and shared transactions will appear here."
+              />
+            )}
+          </div>
+        </Modal>
+      )}
       {report && (
         <ReportUser
           contact={report}
@@ -3505,6 +3816,39 @@ function Home({ db, save, user, setToast, setPage }) {
         />
       )}
     </div>
+  );
+}
+function VoiceMessage({ message }) {
+  const [source, setSource] = useState(message.voiceUrl || "");
+  const [refreshing, setRefreshing] = useState(false);
+  const refresh = async () => {
+    if (!message.voicePath || refreshing) return;
+    setRefreshing(true);
+    try {
+      setSource(await createVoicePlaybackUrl(message.voicePath));
+    } finally {
+      setRefreshing(false);
+    }
+  };
+  useEffect(() => {
+    setSource(message.voiceUrl || "");
+    if (!message.voiceUrl && message.voicePath) refresh();
+  }, [message.voiceUrl, message.voicePath]);
+  return source ? (
+    <audio
+      className="voice-message"
+      controls
+      preload="none"
+      src={source}
+      onError={refresh}
+    >
+      Voice message
+    </audio>
+  ) : (
+    <button className="secondary voice-retry" onClick={refresh} disabled={refreshing}>
+      <Icon name="RefreshCw" />
+      {refreshing ? "Loading voice…" : "Load voice message"}
+    </button>
   );
 }
 function ReportUser({
@@ -6342,7 +6686,7 @@ function Settings({
             </div>
             <div>
               <dt>Version</dt>
-              <dd>1.3.0</dd>
+              <dd>1.3.1</dd>
             </div>
             <div>
               <dt>Plan</dt>

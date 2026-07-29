@@ -750,6 +750,79 @@ header p,
 .join-request-list > div { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
 .join-request-list span { flex: 1; }
 .join-request-list small { display: block; color: var(--muted); }
+.admin-root-requests {
+  margin: 18px 0;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: rgba(9, 20, 36, 0.72);
+}
+.admin-root-requests h3 { margin: 0 0 12px; }
+.admin-root-requests > p { margin: 0; color: var(--muted); }
+.admin-root-requests article {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 10px;
+  align-items: center;
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
+}
+.admin-root-requests article:first-of-type { border-top: 0; }
+.admin-root-requests article div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.admin-root-requests article span,
+.admin-root-requests article small { color: var(--muted); }
+.voice-retry { min-height: 40px; }
+.notification-button { position: relative; }
+.notification-button > span {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--gold2);
+  box-shadow: 0 0 0 2px var(--card);
+}
+.notification-list { display: grid; gap: 8px; }
+.notification-list > button {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  width: 100%;
+  min-height: 64px;
+  padding: 10px 12px;
+  text-align: left;
+  color: inherit;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--card);
+}
+.notification-list > button.unread { border-color: #d7a62b99; }
+.notification-list > button svg { color: var(--gold2); }
+.notification-list > button span { display: grid; gap: 4px; min-width: 0; }
+.notification-list > button small { color: var(--muted); }
+.offline-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 16px 10px;
+  padding: 9px 12px;
+  color: #f7d98b;
+  border: 1px solid #d7a62b66;
+  border-radius: 10px;
+  background: #6f52172b;
+  font-size: 13px;
+}
+.offline-banner svg { width: 17px; }
+@media (max-width: 760px) {
+  .admin-root-requests article { grid-template-columns: 1fr 1fr; }
+  .admin-root-requests article div { grid-column: 1 / -1; }
+}
 .password-field { position: relative; display: block; }
 .password-field input { width: 100%; padding-right: 48px; }
 .password-field button { position: absolute; right: 4px; top: 4px; width: 40px; height: 40px; border: 0; color: var(--muted); background: transparent; }

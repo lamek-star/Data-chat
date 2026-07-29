@@ -172,6 +172,17 @@ export async function loadCloudCommunities() {
     ]);
   if (error) throw error;
   if (memberError) throw memberError;
+  const applicantIds = [
+    ...new Set(
+      (memberships || [])
+        .filter((membership) => membership.status === "pending")
+        .map((membership) => membership.user_id),
+    ),
+  ];
+  const applicantProfiles = await loadPublicProfiles(applicantIds);
+  const applicantById = new Map(
+    applicantProfiles.map((profile) => [profile.id, profile]),
+  );
   return (communities || []).map((community) => ({
     id: community.id,
     name: community.name,
@@ -199,6 +210,10 @@ export async function loadCloudCommunities() {
       )
       .map((membership) => ({
         userId: membership.user_id,
+        name:
+          applicantById.get(membership.user_id)?.display_name ||
+          "DataChat member",
+        username: applicantById.get(membership.user_id)?.username || "",
         status: membership.status,
         requestedAt: membership.requested_at,
       })),
@@ -208,48 +223,22 @@ export async function loadCloudCommunities() {
 
 export async function createCloudCommunity(community) {
   const client = requireSupabase();
-  const { data: authData } = await client.auth.getUser();
-  if (!authData.user) throw new Error("Sign in again.");
-  const { data, error } = await client
-    .from("communities")
-    .insert({
-      name: community.name,
-      location: community.location,
-      purpose: community.purpose,
-      parent_id: community.parentId,
-      owner_id: authData.user.id,
-      is_admin_root: false,
-      allow_subgroups: Boolean(community.allowSubgroups),
-      allow_invites: true,
-    })
-    .select()
-    .single();
-  if (error) throw error;
-  await client.from("community_memberships").insert({
-    community_id: data.id,
-    user_id: authData.user.id,
-    status: "approved",
-    role: "owner",
-    decided_at: new Date().toISOString(),
+  const { data, error } = await client.rpc("create_datachat_child_community", {
+    requested_name: community.name,
+    requested_location: community.location,
+    requested_purpose: community.purpose,
+    requested_parent_id: community.parentId,
+    requested_allow_subgroups: Boolean(community.allowSubgroups),
   });
-  return data;
+  if (error) throw error;
+  return { id: data };
 }
 
 export async function requestCloudCommunityJoin(communityId) {
   const client = requireSupabase();
-  const { data: authData } = await client.auth.getUser();
-  if (!authData.user) throw new Error("Sign in again.");
-  const { error } = await client.from("community_memberships").upsert(
-    {
-      community_id: communityId,
-      user_id: authData.user.id,
-      status: "pending",
-      role: "member",
-      requested_at: new Date().toISOString(),
-      decided_at: null,
-    },
-    { onConflict: "community_id,user_id" },
-  );
+  const { error } = await client.rpc("request_datachat_community_join", {
+    requested_community_id: communityId,
+  });
   if (error) throw error;
   return true;
 }
@@ -260,16 +249,48 @@ export async function decideCloudCommunityJoin(
   approved,
 ) {
   const client = requireSupabase();
-  const { error } = await client
-    .from("community_memberships")
-    .update({
-      status: approved ? "approved" : "declined",
-      decided_at: new Date().toISOString(),
-    })
-    .eq("community_id", communityId)
-    .eq("user_id", userId);
+  const { error } = await client.rpc("decide_datachat_community_join", {
+    requested_community_id: communityId,
+    requested_user_id: userId,
+    requested_approved: Boolean(approved),
+  });
   if (error) throw error;
   return true;
+}
+
+export async function loadAdminCommunityRequests(username, password) {
+  const client = requireSupabase();
+  const { data, error } = await client.rpc(
+    "datachat_admin_community_requests",
+    {
+      requested_username: username,
+      requested_password: password,
+    },
+  );
+  if (error) throw error;
+  return data || [];
+}
+
+export async function decideAdminCommunityJoin(
+  username,
+  password,
+  communityId,
+  userId,
+  approved,
+) {
+  const client = requireSupabase();
+  const { data, error } = await client.rpc(
+    "datachat_admin_decide_community_join",
+    {
+      requested_username: username,
+      requested_password: password,
+      requested_community_id: communityId,
+      requested_user_id: userId,
+      requested_approved: Boolean(approved),
+    },
+  );
+  if (error) throw error;
+  return data;
 }
 
 export async function updateCurrentUserPassword(password, username) {
@@ -459,9 +480,10 @@ export async function loadDirectMessages(userId) {
     .from("direct_messages")
     .select("id, sender_id, recipient_id, payload, created_at, read_at")
     .or(`sender_id.eq.${userId},recipient_id.eq.${userId}`)
-    .order("created_at", { ascending: true });
+    .order("created_at", { ascending: false })
+    .limit(250);
   if (error) throw error;
-  return data || [];
+  return (data || []).reverse();
 }
 
 export async function loadPublicProfiles(userIds) {
@@ -630,36 +652,42 @@ export async function uploadVoiceMessage(
   const client = requireSupabase();
   const { data: authData } = await client.auth.getUser();
   if (!authData.user) throw new Error("Sign in again.");
-  const extension = blob.type.includes("mp4")
+  const contentType = (blob.type || "audio/webm").split(";")[0].toLowerCase();
+  const extension = contentType.includes("mp4")
     ? "m4a"
-    : blob.type.includes("ogg")
+    : contentType.includes("ogg")
       ? "ogg"
       : "webm";
   const path = `${authData.user.id}/${messageId}.${extension}`;
-  const { error: uploadError } = await client.storage
-    .from("voice-messages")
-    .upload(path, blob, {
-      upsert: false,
-      contentType: blob.type || "audio/webm",
+  let uploadError;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const result = await client.storage.from("voice-messages").upload(path, blob, {
+      upsert: attempt > 0,
+      contentType,
       cacheControl: "86400",
     });
+    uploadError = result.error;
+    if (!uploadError) break;
+    if (attempt < 2)
+      await new Promise((resolve) => setTimeout(resolve, 700 * 2 ** attempt));
+  }
   if (uploadError) throw uploadError;
   const { error: metadataError } = await client.from("voice_messages").insert({
     id: messageId,
     sender_id: authData.user.id,
     recipient_id: recipientId,
     object_path: path,
-    mime_type: blob.type || "audio/webm",
+    mime_type: contentType,
     byte_size: blob.size,
     duration_ms: durationMs || null,
   });
-  if (metadataError) {
+  if (metadataError && metadataError.code !== "23505") {
     await client.storage.from("voice-messages").remove([path]);
     throw metadataError;
   }
   const { data, error } = await client.storage
     .from("voice-messages")
-    .createSignedUrl(path, 3600);
+    .createSignedUrl(path, 86400);
   if (error) throw error;
   return { voicePath: path, voiceUrl: data.signedUrl };
 }
@@ -669,7 +697,7 @@ export async function createVoicePlaybackUrl(path) {
   const client = requireSupabase();
   const { data, error } = await client.storage
     .from("voice-messages")
-    .createSignedUrl(path, 3600);
+    .createSignedUrl(path, 86400);
   if (error) throw error;
   return data.signedUrl;
 }
@@ -732,6 +760,7 @@ export async function sendDirectMessage(recipientId, message) {
     })
     .select()
     .single();
+  if (error?.code === "23505") return { id: message.id, duplicate: true };
   if (error) throw error;
   return data;
 }
@@ -760,6 +789,23 @@ export function subscribeToContactNetwork(callback) {
     .on(
       "postgres_changes",
       { event: "*", schema: "public", table: "user_contacts" },
+      callback,
+    )
+    .subscribe();
+}
+
+export function subscribeToCommunityNetwork(callback) {
+  const client = requireSupabase();
+  return client
+    .channel(`datachat-communities-${crypto.randomUUID()}`)
+    .on(
+      "postgres_changes",
+      { event: "*", schema: "public", table: "community_memberships" },
+      callback,
+    )
+    .on(
+      "postgres_changes",
+      { event: "*", schema: "public", table: "communities" },
       callback,
     )
     .subscribe();

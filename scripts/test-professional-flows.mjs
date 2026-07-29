@@ -14,6 +14,7 @@ const password = `DataChat-${crypto.randomUUID()}!`;
 const ids = [];
 const voicePaths = [];
 const proCodeIds = [];
+const communityIds = [];
 const check = (condition, label) => {
   if (!condition) throw new Error(`FAILED: ${label}`);
   console.log(`PASS: ${label}`);
@@ -162,6 +163,88 @@ try {
     .single();
   if (receivedError) throw receivedError;
   check(received.payload.content === "E2E", "direct messages cross user accounts");
+  const { error: duplicateMessageError } = await sender.from("direct_messages").insert({
+    id: messageId,
+    sender_id: senderUser.id,
+    recipient_id: receiverUser.id,
+    payload: { version: 2, content: "E2E", time: "now" },
+  });
+  check(
+    duplicateMessageError?.code === "23505",
+    "stable message IDs make low-bandwidth retries idempotent",
+  );
+
+  const { data: rootCommunity, error: rootCommunityError } = await admin
+    .from("communities")
+    .insert({
+      name: `Test root ${suffix}`,
+      location: "Test location",
+      purpose: "Root approval test",
+      owner_id: null,
+      is_admin_root: true,
+      allow_subgroups: true,
+      allow_invites: true,
+    })
+    .select("id")
+    .single();
+  if (rootCommunityError) throw rootCommunityError;
+  communityIds.push(rootCommunity.id);
+
+  const { error: rootRequestError } = await sender.rpc(
+    "request_datachat_community_join",
+    { requested_community_id: rootCommunity.id },
+  );
+  if (rootRequestError) throw rootRequestError;
+  const { data: rootRequest } = await admin
+    .from("community_memberships")
+    .select("status")
+    .eq("community_id", rootCommunity.id)
+    .eq("user_id", senderUser.id)
+    .single();
+  check(rootRequest.status === "pending", "root community join requests reach the admin queue");
+
+  await admin
+    .from("community_memberships")
+    .update({ status: "approved", decided_at: new Date().toISOString() })
+    .eq("community_id", rootCommunity.id)
+    .eq("user_id", senderUser.id);
+  const { data: childId, error: childError } = await sender.rpc(
+    "create_datachat_child_community",
+    {
+      requested_name: `Test child ${suffix}`,
+      requested_location: "Test location",
+      requested_purpose: "Owner approval test",
+      requested_parent_id: rootCommunity.id,
+      requested_allow_subgroups: false,
+    },
+  );
+  if (childError) throw childError;
+  communityIds.push(childId);
+
+  const { error: childRequestError } = await receiver.rpc(
+    "request_datachat_community_join",
+    { requested_community_id: childId },
+  );
+  if (childRequestError) throw childRequestError;
+  const { error: childDecisionError } = await sender.rpc(
+    "decide_datachat_community_join",
+    {
+      requested_community_id: childId,
+      requested_user_id: receiverUser.id,
+      requested_approved: true,
+    },
+  );
+  if (childDecisionError) throw childDecisionError;
+  const { data: childMembership } = await admin
+    .from("community_memberships")
+    .select("status")
+    .eq("community_id", childId)
+    .eq("user_id", receiverUser.id)
+    .single();
+  check(
+    childMembership.status === "approved",
+    "child community owners receive and approve join requests",
+  );
 
   const voiceId = crypto.randomUUID();
   const voicePath = `${senderUser.id}/${voiceId}.webm`;
@@ -187,6 +270,9 @@ try {
   if (signedVoiceError) throw signedVoiceError;
   check(Boolean(signedVoice.signedUrl), "voice files are private and playable by the recipient");
 } finally {
+  if (communityIds.length) {
+    await admin.from("communities").delete().in("id", communityIds);
+  }
   if (voicePaths.length) {
     await admin.storage.from("voice-messages").remove(voicePaths);
   }

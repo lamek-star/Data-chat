@@ -34,6 +34,8 @@ import {
   deleteCloudUserFromAdmin,
   createRootCommunityFromAdmin,
   loadAdminOperationalSnapshot,
+  loadAdminCommunityRequests,
+  decideAdminCommunityJoin,
 } from "./cloud/supabaseClient";
 
 const KEY = "datachat-v1";
@@ -150,6 +152,10 @@ function AdminApp() {
           ADMIN_USERNAME,
           f.password,
         );
+        const communityRequests = await loadAdminCommunityRequests(
+          ADMIN_USERNAME,
+          f.password,
+        );
         setDb((current) => ({
           ...current,
           users: [
@@ -161,6 +167,7 @@ function AdminApp() {
           ],
           communities: snapshot.communities || [],
           accessCodes: codes,
+          communityJoinRequests: communityRequests,
         }));
         setCloudAdminPassword(f.password);
         setOperations(operational);
@@ -189,6 +196,10 @@ function AdminApp() {
           ADMIN_USERNAME,
           form.password,
         );
+        const communityRequests = await loadAdminCommunityRequests(
+          ADMIN_USERNAME,
+          form.password,
+        );
         setDb((current) => ({
           ...current,
           users: [
@@ -199,6 +210,7 @@ function AdminApp() {
             })),
           ],
           communities: snapshot.communities || [],
+          communityJoinRequests: communityRequests,
         }));
         setCloudAdminPassword(form.password);
         setOperations(operational);
@@ -363,6 +375,37 @@ function AdminApp() {
       setToast(`Community creation failed: ${cloudError.message}`);
     }
   };
+  const decideRootJoin = async (request, approved) => {
+    try {
+      await decideAdminCommunityJoin(
+        ADMIN_USERNAME,
+        cloudAdminPassword,
+        request.communityId,
+        request.userId,
+        approved,
+      );
+      setDb((current) => ({
+        ...current,
+        communityJoinRequests: (current.communityJoinRequests || []).filter(
+          (item) =>
+            !(
+              item.communityId === request.communityId &&
+              item.userId === request.userId
+            ),
+        ),
+      }));
+      setOperations((current) => ({
+        ...current,
+        communityRequests: Math.max(
+          0,
+          Number(current.communityRequests || 1) - 1,
+        ),
+      }));
+      setToast(approved ? "Root community request approved" : "Request declined");
+    } catch (cloudError) {
+      setToast(`Community decision failed: ${cloudError.message}`);
+    }
+  };
   const downloadRecovery = (item) => {
     const url = URL.createObjectURL(
       new Blob([item.encrypted], { type: "application/json" }),
@@ -445,6 +488,7 @@ function AdminApp() {
             ["Users", users.length, Users],
             ["Contacts", operations.contacts || 0, UserRoundCheck],
             ["Requests", operations.contactRequests || 0, UserPlus],
+            ["Community approvals", operations.communityRequests || 0, Network],
             ["Ratings", operations.ratings || 0, Star],
             ["Transactions", operations.transactions || 0, ReceiptText],
             ["Messages", operations.messages || 0, MessageCircle],
@@ -584,6 +628,33 @@ function AdminApp() {
                 authority.
               </p>
             </div>
+          </div>
+          <div className="admin-root-requests">
+            <h3>Root community join requests</h3>
+            {(db.communityJoinRequests || []).map((request) => (
+              <article key={`${request.communityId}-${request.userId}`}>
+                <div>
+                  <b>{request.userName}</b>
+                  <span>{request.userEmail}</span>
+                  <small>Requests access to {request.communityName}</small>
+                </div>
+                <button
+                  className="primary compact"
+                  onClick={() => decideRootJoin(request, true)}
+                >
+                  Approve
+                </button>
+                <button
+                  className="secondary compact"
+                  onClick={() => decideRootJoin(request, false)}
+                >
+                  Decline
+                </button>
+              </article>
+            ))}
+            {!(db.communityJoinRequests || []).length && (
+              <p>No pending root-community requests.</p>
+            )}
           </div>
           <div className="admin-community-layout">
             <form
