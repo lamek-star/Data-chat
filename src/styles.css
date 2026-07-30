@@ -367,7 +367,7 @@ header p,
 }
 .chat {
   display: grid;
-  grid-template-rows: 76px 1fr 78px;
+  grid-template-rows: 76px minmax(0, 1fr) auto;
   height: 100vh;
   min-width: 0;
 }
@@ -727,7 +727,8 @@ header p,
   background: #091323;
   position: relative;
 }
-.composer input {
+.composer input,
+.composer textarea[name="message"] {
   height: 46px;
   flex: 1;
   background: #101d30;
@@ -742,7 +743,91 @@ header p,
     box-shadow 180ms ease,
     background 180ms ease;
 }
-.composer input::placeholder { color: #9aa9bd; -webkit-text-fill-color: #9aa9bd; opacity: 1; }
+.composer textarea[name="message"] {
+  min-height: 46px;
+  max-height: 112px;
+  resize: none;
+  overflow-y: auto;
+  line-height: 1.45;
+  font: inherit;
+}
+.composer input::placeholder,
+.composer textarea[name="message"]::placeholder { color: #9aa9bd; -webkit-text-fill-color: #9aa9bd; opacity: 1; }
+.message-menu-button {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  color: inherit;
+  background: transparent;
+  opacity: .58;
+}
+.message-menu-button:active,
+.message-menu-button:focus-visible {
+  opacity: 1;
+  background: #0002;
+}
+.bubble {
+  position: relative;
+  padding-right: 34px;
+}
+.deleted-message {
+  opacity: .72;
+  font-style: italic;
+}
+.message-action-sheet {
+  display: grid;
+  gap: 10px;
+  padding: 18px;
+}
+.message-action-sheet > p {
+  max-height: 96px;
+  overflow: auto;
+  margin: 0 0 6px;
+  padding: 12px;
+  color: var(--muted);
+  background: #091424;
+  border-radius: 10px;
+  overflow-wrap: anywhere;
+}
+.message-action-sheet > button {
+  justify-content: flex-start;
+  min-height: 48px;
+}
+.composer-edit-banner {
+  position: absolute;
+  left: 20px;
+  right: 20px;
+  bottom: calc(100% - 2px);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 12px;
+  border-left: 3px solid var(--gold);
+  border-radius: 10px 10px 0 0;
+  color: #eef3fa;
+  background: #122239;
+  box-shadow: 0 -8px 20px #0003;
+}
+.composer-edit-banner > span {
+  min-width: 0;
+  flex: 1;
+}
+.composer-edit-banner b,
+.composer-edit-banner small {
+  display: block;
+}
+.composer-edit-banner small {
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .voice-button.recording { color: #fff; background: #b83434; animation: voice-pulse 1s ease-in-out infinite; }
 @keyframes voice-pulse { 50% { box-shadow: 0 0 0 7px #dc454526; } }
 .voice-message { display: block; width: min(260px, 65vw); height: 38px; }
@@ -829,7 +914,8 @@ header p,
 .otp-field-group { display: grid; gap: 10px; }
 .resend-otp { width: 100%; min-height: 44px; }
 .logo img { width: 100%; height: 100%; object-fit: contain; }
-.composer input:focus {
+.composer input:focus,
+.composer textarea[name="message"]:focus {
   border-color: #b68c2d;
   box-shadow: 0 0 0 3px #d7a62b22;
   background: #13233a;
@@ -2165,6 +2251,7 @@ dd {
   line-height: 1.6;
 }
 .composer input:disabled,
+.composer textarea[name="message"]:disabled,
 .composer button:disabled {
   opacity: 0.45;
   cursor: not-allowed;
@@ -3148,7 +3235,7 @@ dd {
 
 .bubble {
   max-width: min(78%, 560px);
-  padding: 9px 12px 7px;
+  padding: 9px 34px 7px 12px;
   border-radius: 16px;
   box-shadow: 0 1px 2px #0004;
   transition: background-color 180ms ease, box-shadow 180ms ease;
@@ -3170,7 +3257,7 @@ dd {
   padding-bottom: max(10px, env(safe-area-inset-bottom));
   backdrop-filter: blur(16px);
 }
-.composer input[name="message"] {
+.composer textarea[name="message"] {
   min-height: 46px;
   font-size: 16px;
 }

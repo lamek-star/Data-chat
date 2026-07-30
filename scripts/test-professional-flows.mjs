@@ -173,48 +173,69 @@ try {
     duplicateMessageError?.code === "23505",
     "stable message IDs make low-bandwidth retries idempotent",
   );
-
-  const { data: rootCommunity, error: rootCommunityError } = await admin
-    .from("communities")
-    .insert({
-      name: `Test root ${suffix}`,
-      location: "Test location",
-      purpose: "Root approval test",
-      owner_id: null,
-      is_admin_root: true,
-      allow_subgroups: true,
-      allow_invites: true,
-    })
-    .select("id")
-    .single();
-  if (rootCommunityError) throw rootCommunityError;
-  communityIds.push(rootCommunity.id);
-
-  const { error: rootRequestError } = await sender.rpc(
-    "request_datachat_community_join",
-    { requested_community_id: rootCommunity.id },
+  const { data: editedPayload, error: editMessageError } = await sender.rpc(
+    "edit_datachat_direct_message",
+    {
+      requested_message_id: messageId,
+      requested_content: "E2E edited",
+    },
   );
-  if (rootRequestError) throw rootRequestError;
-  const { data: rootRequest } = await admin
-    .from("community_memberships")
-    .select("status")
-    .eq("community_id", rootCommunity.id)
-    .eq("user_id", senderUser.id)
-    .single();
-  check(rootRequest.status === "pending", "root community join requests reach the admin queue");
+  if (editMessageError) throw editMessageError;
+  check(
+    editedPayload.content === "E2E edited" && editedPayload.edited === true,
+    "senders can edit their own text messages",
+  );
+  const { error: unauthorizedEditError } = await receiver.rpc(
+    "edit_datachat_direct_message",
+    {
+      requested_message_id: messageId,
+      requested_content: "Unauthorized",
+    },
+  );
+  check(
+    Boolean(unauthorizedEditError),
+    "recipients cannot edit another member's message",
+  );
+  const { data: deletedPayload, error: deleteMessageError } = await sender.rpc(
+    "delete_datachat_direct_message",
+    { requested_message_id: messageId },
+  );
+  if (deleteMessageError) throw deleteMessageError;
+  check(
+    deletedPayload.deleted === true &&
+      deletedPayload.content === "This message was deleted",
+    "sender deletion is synchronized without exposing old content",
+  );
 
-  await admin
-    .from("community_memberships")
-    .update({ status: "approved", decided_at: new Date().toISOString() })
-    .eq("community_id", rootCommunity.id)
-    .eq("user_id", senderUser.id);
+  const { data: independentCommunityId, error: independentCommunityError } =
+    await sender.rpc("create_datachat_child_community", {
+      requested_name: `Independent ${suffix}`,
+      requested_location: "Test location",
+      requested_purpose: "Independent community test",
+      requested_parent_id: null,
+      requested_allow_subgroups: true,
+    });
+  if (independentCommunityError) throw independentCommunityError;
+  communityIds.push(independentCommunityId);
+  const { data: independentCommunity } = await admin
+    .from("communities")
+    .select("parent_id,is_admin_root,owner_id")
+    .eq("id", independentCommunityId)
+    .single();
+  check(
+    independentCommunity.parent_id === null &&
+      independentCommunity.is_admin_root === false &&
+      independentCommunity.owner_id === senderUser.id,
+    "verified Pro users create independent communities without seeing an admin root",
+  );
+
   const { data: childId, error: childError } = await sender.rpc(
     "create_datachat_child_community",
     {
       requested_name: `Test child ${suffix}`,
       requested_location: "Test location",
       requested_purpose: "Owner approval test",
-      requested_parent_id: rootCommunity.id,
+      requested_parent_id: independentCommunityId,
       requested_allow_subgroups: false,
     },
   );

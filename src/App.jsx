@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { motion } from "framer-motion";
-import { Capacitor } from "@capacitor/core";
+import { Capacitor, registerPlugin } from "@capacitor/core";
 import {
   AndroidBiometryStrength,
   BiometricAuth,
@@ -41,6 +41,8 @@ import {
   findPublicProfile,
   loadDirectMessages,
   sendDirectMessage,
+  editDirectMessage,
+  deleteDirectMessage,
   subscribeToDirectMessages,
   subscribeToContactNetwork,
   subscribeToCommunityNetwork,
@@ -77,6 +79,7 @@ import {
 } from "recharts";
 
 const K = "datachat-v1";
+const DataChatNativeSettings = registerPlugin("DataChatNativeSettings");
 const API_BASE = (
   import.meta.env.VITE_API_BASE_URL || "https://datachat.harmongt.uk"
 ).replace(/\/$/, "");
@@ -744,25 +747,46 @@ function parseCsvRows(text) {
 }
 async function requestNotificationPermission() {
   if (isNativeApp()) {
-    if (Capacitor.getPlatform() === "android") {
-      await LocalNotifications.createChannel({
-        id: "datachat-messages",
-        name: "DataChat messages",
-        description: "New messages, transactions, and voice messages",
-        importance: 5,
-        visibility: 1,
-        vibration: true,
-      });
-    }
     const current = await LocalNotifications.checkPermissions();
     const result =
       current.display === "granted"
         ? current
         : await LocalNotifications.requestPermissions();
-    return result.display === "granted";
+    if (result.display !== "granted") return false;
+    if (Capacitor.getPlatform() === "android") {
+      await LocalNotifications.createChannel({
+        id: "datachat-messages",
+        name: "DataChat messages",
+        description: "New messages, transactions, and voice messages",
+        importance: 4,
+        visibility: 0,
+        vibration: true,
+      }).catch(() => {});
+    }
+    return true;
   }
   if (!("Notification" in window)) return false;
   return (await Notification.requestPermission()) === "granted";
+}
+async function requestMicrophonePermission() {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    throw new Error("Voice recording is not supported on this device.");
+  }
+  return navigator.mediaDevices.getUserMedia({
+    audio: {
+      channelCount: 1,
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+    },
+  });
+}
+async function openNativeAppSettings() {
+  if (isNativeApp() && Capacitor.getPlatform() === "android") {
+    await DataChatNativeSettings.openAppSettings();
+    return true;
+  }
+  return false;
 }
 async function notifyIncomingMessage(senderName, message) {
   const title = `New message from ${senderName || "DataChat contact"}`;
@@ -780,10 +804,10 @@ async function notifyIncomingMessage(senderName, message) {
         id: "datachat-messages",
         name: "DataChat messages",
         description: "New messages, transactions, and voice messages",
-        importance: 5,
-        visibility: 1,
+        importance: 4,
+        visibility: 0,
         vibration: true,
-      });
+      }).catch(() => {});
     }
     const permission = await LocalNotifications.checkPermissions();
     if (permission.display !== "granted") return false;
@@ -794,8 +818,6 @@ async function notifyIncomingMessage(senderName, message) {
           title,
           body,
           channelId: "datachat-messages",
-          schedule: { at: new Date(Date.now() + 750) },
-          sound: "default",
           extra: { page: "home" },
         },
       ],
@@ -1073,8 +1095,26 @@ function App() {
 
   useEffect(() => {
     if (!cloudConfigured || !cloudAuthUser) return;
-    const receive = async ({ new: row }) => {
-      if (!row || row.sender_id === cloudAuthUser.id) return;
+    const receive = async ({ eventType, new: row }) => {
+      if (!row) return;
+      if (eventType === "UPDATE") {
+        setDb((current) => ({
+          ...current,
+          messages: current.messages.map((message) =>
+            message.id === row.id
+              ? {
+                  ...message,
+                  ...row.payload,
+                  voiceUrl: row.payload?.voicePath
+                    ? message.voiceUrl
+                    : null,
+                }
+              : message,
+          ),
+        }));
+        return;
+      }
+      if (row.sender_id === cloudAuthUser.id) return;
       const resolvedVoiceUrl = row.payload?.voicePath
         ? await createVoicePlaybackUrl(row.payload.voicePath).catch(() => null)
         : row.payload?.voiceUrl;
@@ -2979,7 +3019,8 @@ function CommunityManager({ db, save, user, setToast }) {
   const [createOpen, setCreateOpen] = useState(false);
   const [manage, setManage] = useState(null);
   const communities = db.communities || [];
-  const eligibleParents = communities.filter(
+  const visibleCommunities = communities.filter((x) => !x.isAdminRoot);
+  const eligibleParents = visibleCommunities.filter(
     (x) =>
       x.permissions?.allowSubgroups &&
       (x.members || []).includes(user.id),
@@ -2991,16 +3032,14 @@ function CommunityManager({ db, save, user, setToast }) {
     if (cloudConfigured && !user.emailVerified)
       return setToast("Verify your email before creating a community.");
     const f = Object.fromEntries(new FormData(e.currentTarget));
-    const parent = communities.find((x) => x.id === f.parentId);
-    if (!parent)
-      return setToast("Join an approved parent community before creating a group.");
+    const parent = visibleCommunities.find((x) => x.id === f.parentId) || null;
     const group = {
       id: uid("community"),
       name: f.name,
       location: f.location,
       purpose: f.purpose,
-      parentId: parent.id,
-      level: (parent.level || 0) + 1,
+      parentId: parent?.id || null,
+      level: parent ? (parent.level || 0) + 1 : 0,
       createdBy: user.id,
       permissions: {
         allowSubgroups: f.allowSubgroups === "on",
@@ -3023,7 +3062,11 @@ function CommunityManager({ db, save, user, setToast }) {
         ...d,
         communities: [...(d.communities || []), group],
       }));
-      setToast(`${group.name} created under ${parent.name}`);
+      setToast(
+        parent
+          ? `${group.name} created under ${parent.name}`
+          : `${group.name} community created`,
+      );
       setCreateOpen(false);
     } catch (error) {
       setToast(`Community creation failed: ${error.message}`);
@@ -3085,15 +3128,14 @@ function CommunityManager({ db, save, user, setToast }) {
           <span className="eyebrow">COMMUNITY HIERARCHY</span>
           <h2>Your communities</h2>
           <p>
-            Join a root community, wait for administrator approval, then create
-            a local group beneath it.
+            Create an independent community, or place a subgroup beneath a
+            community where you are already an approved member.
           </p>
         </div>
         <button
           className="primary"
           onClick={() => setCreateOpen(true)}
           disabled={
-            !eligibleParents.length ||
             user.plan !== "Pro" ||
             (cloudConfigured && !user.emailVerified)
           }
@@ -3104,13 +3146,10 @@ function CommunityManager({ db, save, user, setToast }) {
         {user.plan !== "Pro" && (
           <small>Community creation is available to verified Pro members.</small>
         )}
-        {user.plan === "Pro" && !eligibleParents.length && (
-          <small>Request access to a root community before creating a subgroup.</small>
-        )}
       </div>
       <div className="community-tree">
-        {communities.map((group) => {
-          const parent = communities.find((x) => x.id === group.parentId);
+        {visibleCommunities.map((group) => {
+          const parent = visibleCommunities.find((x) => x.id === group.parentId);
           const isMember = (group.members || []).includes(user.id);
           const pendingRequest = (group.joinRequests || []).some((request) => request.userId === user.id && request.status === "pending");
           const canManage =
@@ -3130,7 +3169,7 @@ function CommunityManager({ db, save, user, setToast }) {
                 ) : (
                   <>
                     <Icon name="Network" />
-                    Administrator root
+                    Independent community
                   </>
                 )}
               </div>
@@ -3195,17 +3234,18 @@ function CommunityManager({ db, save, user, setToast }) {
           <form className="form" onSubmit={createGroup}>
             <label>
               Parent community
-              <select name="parentId" required defaultValue="">
-                <option value="" disabled>
-                  Choose approved community…
-                </option>
+              <select name="parentId" defaultValue="">
+                <option value="">Independent community</option>
                 {eligibleParents.map((x) => (
                   <option key={x.id} value={x.id}>
                     {"—".repeat(x.level || 0)} {x.name} · {x.location}
                   </option>
                 ))}
               </select>
-              <small>Your group inherits its place in this hierarchy.</small>
+              <small>
+                A parent is optional. Only approved communities that allow
+                subgroups appear here.
+              </small>
             </label>
             <label>
               Community name
@@ -3297,7 +3337,10 @@ function Home({ db, save, user, setToast, setPage }) {
     [add, setAdd] = useState(false),
     [report, setReport] = useState(null),
     [attachments, setAttachments] = useState(false),
-    [showNotifications, setShowNotifications] = useState(false);
+    [showNotifications, setShowNotifications] = useState(false),
+    [messageAction, setMessageAction] = useState(null),
+    [editingMessage, setEditingMessage] = useState(null),
+    [draft, setDraft] = useState("");
   const messagesRef = useRef(null);
   const recorderRef = useRef(null);
   const recordingChunksRef = useRef([]);
@@ -3330,14 +3373,41 @@ function Home({ db, save, user, setToast, setPage }) {
   const send = async (e) => {
     e.preventDefault();
     if (c?.blocked) return setToast("This member is blocked");
-    const inp = e.currentTarget.elements.message;
-    if (!inp.value.trim()) return;
+    const content = draft.trim();
+    if (!content) return;
+    if (editingMessage) {
+      if (
+        editingMessage.cloudMessage &&
+        (navigator.onLine === false || editingMessage.deliveryStatus === "queued")
+      ) {
+        return setToast("Connect to edit a message that has already been sent.");
+      }
+      try {
+        if (editingMessage.cloudMessage) {
+          await editDirectMessage(editingMessage.id, content);
+        }
+        save((d) => ({
+          ...d,
+          messages: d.messages.map((item) =>
+            item.id === editingMessage.id
+              ? { ...item, content, edited: true }
+              : item,
+          ),
+        }));
+        setDraft("");
+        setEditingMessage(null);
+        setToast("Message edited");
+      } catch (error) {
+        setToast(`Message could not be edited: ${error.message}`);
+      }
+      return;
+    }
     const message = {
       id: c?.remoteUserId ? crypto.randomUUID() : uid("m"),
       owner: user.id,
       contact: selected,
       sender: "me",
-      content: inp.value.trim(),
+      content,
       cloudMessage: Boolean(c?.remoteUserId),
       deliveryStatus: c?.remoteUserId ? "sending" : "sent",
       time: new Date().toLocaleTimeString([], {
@@ -3345,7 +3415,7 @@ function Home({ db, save, user, setToast, setPage }) {
         minute: "2-digit",
       }),
     };
-    inp.value = "";
+    setDraft("");
     save((d) => ({
       ...d,
       messages: [...d.messages, message],
@@ -3450,6 +3520,50 @@ function Home({ db, save, user, setToast, setPage }) {
     }
     setToast(`Transaction ${record.id} sent to ${c.name}`);
   };
+  const beginEditMessage = (message) => {
+    setDraft(message.content || "");
+    setEditingMessage(message);
+    setMessageAction(null);
+    window.setTimeout(() => {
+      document.querySelector('.composer textarea[name="message"]')?.focus();
+    }, 50);
+  };
+  const deleteMessageForEveryone = async (message) => {
+    if (!window.confirm("Delete this message for both people?")) return;
+    if (
+      message.cloudMessage &&
+      (navigator.onLine === false || message.deliveryStatus === "queued")
+    ) {
+      return setToast("Connect to delete a message that has already been sent.");
+    }
+    try {
+      if (message.cloudMessage) await deleteDirectMessage(message.id);
+      save((d) => ({
+        ...d,
+        messages: d.messages.map((item) =>
+          item.id === message.id
+            ? {
+                ...item,
+                content: "This message was deleted",
+                deleted: true,
+                edited: false,
+                voiceUrl: null,
+                voicePath: null,
+                transaction: null,
+              }
+            : item,
+        ),
+      }));
+      setMessageAction(null);
+      if (editingMessage?.id === message.id) {
+        setEditingMessage(null);
+        setDraft("");
+      }
+      setToast("Message deleted for everyone");
+    } catch (error) {
+      setToast(`Message could not be deleted: ${error.message}`);
+    }
+  };
   const toggleVoiceRecording = async () => {
     if (user.plan !== "Pro") return setToast("Voice messages are available with DataChat Pro");
     if (!c || c.blocked) return;
@@ -3457,7 +3571,7 @@ function Home({ db, save, user, setToast, setPage }) {
     if (c.remoteUserId && navigator.onLine === false)
       return setToast("Connect briefly to upload a compressed voice message.");
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await requestMicrophonePermission();
       const preferredType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
         ? "audio/webm;codecs=opus"
         : MediaRecorder.isTypeSupported("audio/webm")
@@ -3530,7 +3644,9 @@ function Home({ db, save, user, setToast, setPage }) {
       window.setTimeout(() => {
         if (recorder.state === "recording") recorder.stop();
       }, 45000);
-    } catch (error) { setToast(`Microphone unavailable: ${error.message}`); }
+    } catch (error) {
+      setToast(`Microphone unavailable: ${error.message}`);
+    }
   };
   useEffect(() => {
     messagesRef.current?.scrollTo({
@@ -3669,12 +3785,28 @@ function Home({ db, save, user, setToast, setPage }) {
                   />
                 ) : (
                   <div key={m.id} className={"bubble " + m.sender}>
+                    <button
+                      type="button"
+                      className="message-menu-button"
+                      aria-label="Message actions"
+                      onClick={() => setMessageAction(m)}
+                    >
+                      <Icon name="ChevronDown" size={15} />
+                    </button>
                     {m.voicePath || m.voiceUrl ? (
                       <VoiceMessage message={m} />
                     ) : (
-                      m.content
+                      <span className={m.deleted ? "deleted-message" : ""}>
+                        {m.content}
+                      </span>
                     )}
-                    <small>{m.time}{m.sender === "me" && m.deliveryStatus ? ` · ${m.deliveryStatus}` : ""}</small>
+                    <small>
+                      {m.edited && !m.deleted ? "edited · " : ""}
+                      {m.time}
+                      {m.sender === "me" && m.deliveryStatus
+                        ? ` · ${m.deliveryStatus}`
+                        : ""}
+                    </small>
                   </div>
                 ),
               )}
@@ -3721,18 +3853,53 @@ function Home({ db, save, user, setToast, setPage }) {
               >
                 <Icon name="Paperclip" />
               </button>
-              <input
+              {editingMessage && (
+                <div className="composer-edit-banner">
+                  <span>
+                    <b>Edit message</b>
+                    <small>{editingMessage.content}</small>
+                  </span>
+                  <button
+                    type="button"
+                    className="icon-btn"
+                    aria-label="Cancel editing"
+                    onClick={() => {
+                      setEditingMessage(null);
+                      setDraft("");
+                    }}
+                  >
+                    <Icon name="X" />
+                  </button>
+                </div>
+              )}
+              <textarea
                 name="message"
                 aria-label="Message"
                 disabled={c.blocked}
-                placeholder="Write a secure message…"
+                placeholder="Message"
+                rows="1"
+                value={draft}
+                onChange={(event) => setDraft(event.target.value.slice(0, 4000))}
+                onKeyDown={(event) => {
+                  if (
+                    event.key === "Enter" &&
+                    !event.shiftKey &&
+                    !event.nativeEvent?.isComposing
+                  ) {
+                    event.preventDefault();
+                    event.currentTarget.form?.requestSubmit();
+                  }
+                }}
               />
-              <button className="send" aria-label="Send" disabled={c.blocked}>
-                <Icon name="Send" />
-              </button>
-              <button type="button" className={`icon-btn voice-button ${recording ? "recording" : ""}`} onClick={toggleVoiceRecording} aria-label={recording ? "Stop voice recording" : "Record voice message"} title={user.plan === "Pro" ? "Voice message" : "Voice messages require Pro"}>
-                <Icon name={recording ? "Square" : "Mic"} />
-              </button>
+              {draft.trim() || editingMessage ? (
+                <button className="send" aria-label={editingMessage ? "Save edited message" : "Send"} disabled={c.blocked}>
+                  <Icon name={editingMessage ? "Check" : "Send"} />
+                </button>
+              ) : (
+                <button type="button" className={`send voice-button ${recording ? "recording" : ""}`} onClick={toggleVoiceRecording} aria-label={recording ? "Stop voice recording" : "Record voice message"} title={user.plan === "Pro" ? "Voice message" : "Voice messages require Pro"}>
+                  <Icon name={recording ? "Square" : "Mic"} />
+                </button>
+              )}
             </form>
           </>
         ) : (
@@ -3743,6 +3910,67 @@ function Home({ db, save, user, setToast, setPage }) {
           />
         )}
       </section>
+      {messageAction && (
+        <Modal
+          title="Message actions"
+          close={() => setMessageAction(null)}
+        >
+          <div className="message-action-sheet">
+            <p>{messageAction.content || "Voice message"}</p>
+            <button
+              type="button"
+              className="secondary"
+              onClick={async () => {
+                await navigator.clipboard.writeText(
+                  messageAction.content || "",
+                );
+                setMessageAction(null);
+                setToast("Message copied");
+              }}
+            >
+              <Icon name="Copy" />
+              Copy
+            </button>
+            {messageAction.sender === "me" &&
+              !messageAction.deleted &&
+              !messageAction.transaction &&
+              !messageAction.voicePath &&
+              !messageAction.voiceUrl && (
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => beginEditMessage(messageAction)}
+                >
+                  <Icon name="Pencil" />
+                  Edit message
+                </button>
+              )}
+            {messageAction.sender === "me" && !messageAction.deleted && (
+              <button
+                type="button"
+                className="secondary danger"
+                onClick={() => deleteMessageForEveryone(messageAction)}
+              >
+                <Icon name="Trash2" />
+                Delete for everyone
+              </button>
+            )}
+            {messageAction.sender === "them" && (
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => {
+                  setMessageAction(null);
+                  setReport(c);
+                }}
+              >
+                <Icon name="ShieldAlert" />
+                Report sender
+              </button>
+            )}
+          </div>
+        </Modal>
+      )}
       {add && (
         <ContactModal
           user={user}
@@ -6548,9 +6776,7 @@ function Settings({
               className="secondary"
               onClick={async () => {
                 try {
-                  const stream = await navigator.mediaDevices.getUserMedia({
-                    audio: true,
-                  });
+                  const stream = await requestMicrophonePermission();
                   stream.getTracks().forEach((track) => track.stop());
                   setPermissionStatus("Microphone enabled");
                 } catch (error) {
@@ -6566,6 +6792,18 @@ function Settings({
           {permissionStatus && (
             <p className="form-note">{permissionStatus}</p>
           )}
+          {isNativeApp() &&
+            permissionStatus.toLowerCase().includes("microphone") &&
+            permissionStatus.toLowerCase().includes("blocked") && (
+              <button
+                type="button"
+                className="secondary full-btn"
+                onClick={() => openNativeAppSettings().catch(() => {})}
+              >
+                <Icon name="Settings" />
+                Open Android app permissions
+              </button>
+            )}
         </section>
         <section className="panel">
           <div className="panel-title">
@@ -6686,7 +6924,7 @@ function Settings({
             </div>
             <div>
               <dt>Version</dt>
-              <dd>1.3.1</dd>
+              <dd>1.3.2</dd>
             </div>
             <div>
               <dt>Plan</dt>

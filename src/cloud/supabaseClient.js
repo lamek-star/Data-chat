@@ -765,13 +765,32 @@ export async function sendDirectMessage(recipientId, message) {
   return data;
 }
 
+export async function editDirectMessage(messageId, content) {
+  const client = requireSupabase();
+  const { data, error } = await client.rpc("edit_datachat_direct_message", {
+    requested_message_id: messageId,
+    requested_content: content,
+  });
+  if (error) throw error;
+  return data;
+}
+
+export async function deleteDirectMessage(messageId) {
+  const client = requireSupabase();
+  const { data, error } = await client.rpc("delete_datachat_direct_message", {
+    requested_message_id: messageId,
+  });
+  if (error) throw error;
+  return data;
+}
+
 export function subscribeToDirectMessages(callback) {
   const client = requireSupabase();
   return client
     .channel("datachat-direct-messages")
     .on(
       "postgres_changes",
-      { event: "INSERT", schema: "public", table: "direct_messages" },
+      { event: "*", schema: "public", table: "direct_messages" },
       callback,
     )
     .subscribe();

@@ -2,6 +2,7 @@ apply plugin: 'com.android.application'
 
 def uploadKeyPropertiesFile = rootProject.file('keystore.properties')
 def uploadKeyProperties = new Properties()
+def preparedMobileAssetsDir = file("${System.properties['java.io.tmpdir']}/datachat-mobile-assets")
 if (uploadKeyPropertiesFile.exists()) {
     uploadKeyProperties.load(new FileInputStream(uploadKeyPropertiesFile))
 }
@@ -11,6 +12,9 @@ android {
     compileSdk = rootProject.ext.compileSdkVersion
     sourceSets {
         main {
+            // OneDrive can expose generated web files as reparse points, which
+            // Android's asset merger rejects. Build from a prepared local copy.
+            assets.srcDirs = [preparedMobileAssetsDir]
             // Downloadable release artifacts are hosted by Cloudflare and must
             // never be recursively embedded inside the mobile application.
             assets.exclude("public/downloads/**")
@@ -20,8 +24,8 @@ android {
         applicationId "com.lamekstar.datachat"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 4
-        versionName "1.3.1"
+        versionCode 5
+        versionName "1.3.2"
         // The direct-download APK targets the CPU architecture used by
         // current Android phones. Google Play will generate other splits
         // from the app bundle when an upload key is configured.
@@ -84,8 +88,17 @@ apply from: 'capacitor.build.gradle'
 tasks.register('removeEmbeddedDownloadArtifacts', Delete) {
     delete file('src/main/assets/public/downloads')
 }
+tasks.register('prepareMobileAssets', Copy) {
+    doNotTrackState("Copies OneDrive-backed Capacitor assets to a regular local build directory")
+    from file('src/main/assets')
+    into preparedMobileAssetsDir
+    exclude 'public/downloads/**'
+    doFirst {
+        delete preparedMobileAssetsDir
+    }
+}
 tasks.named('preBuild').configure {
-    dependsOn 'removeEmbeddedDownloadArtifacts'
+    dependsOn 'removeEmbeddedDownloadArtifacts', 'prepareMobileAssets'
 }
 
 try {

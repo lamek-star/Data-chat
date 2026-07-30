@@ -23,7 +23,10 @@
 # Capacitor discovers plugins and their annotated bridge methods at runtime.
 -keep @com.getcapacitor.annotation.CapacitorPlugin class * { *; }
 -keep class * extends com.getcapacitor.Plugin { *; }
--keepattributes RuntimeVisibleAnnotations,AnnotationDefault
+-keep class com.getcapacitor.annotation.** { *; }
+-keep class com.capacitorjs.plugins.localnotifications.** { *; }
+-keep class com.lamekstar.datachat.DataChatPermissionsPlugin { *; }
+-keepattributes RuntimeVisibleAnnotations,RuntimeInvisibleAnnotations,AnnotationDefault
 
 # The barcode plugin references this optional annotation only for model
 # serialization metadata; scanning does not require Gson at runtime.
