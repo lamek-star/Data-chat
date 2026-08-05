@@ -88,193 +88,37 @@ const STRIPE_PAYMENT_LINK =
   "https://buy.stripe.com/test_eVq5kD42Fcqe0ALaoJao801";
 const apiUrl = (path) => `${API_BASE}${path}`;
 const seed = {
-  users: [
-    {
-      id: "demo",
-      name: "Abel Tesfaye",
-      email: "demo@datachat.app",
-      password: "demo123",
-      plan: "Pro",
-      role: "user",
-      status: "active",
-    },
-    {
-      id: "free-demo",
-      name: "Free Test User",
-      email: "free@datachat.app",
-      password: "free123",
-      plan: "Free",
-      role: "user",
-      status: "active",
-    },
-    {
-      id: "admin",
-      name: "DataChat Administrator",
-      email: "admin@datachat.app",
-      password: "admin123",
-      plan: "Admin",
-      role: "admin",
-      status: "active",
-    },
-  ],
-  records: [
-    {
-      id: "TXN-1048",
-      owner: "demo",
-      sender: "Abel Tesfaye",
-      senderPhone: "+971 50 123 4567",
-      from: "UAE",
-      receiver: "Sara Bekele",
-      receiverPhone: "+251 91 234 5678",
-      to: "Ethiopia",
-      account: "•••• 8842",
-      amount: 1250,
-      currency: "USD",
-      rate: 132.5,
-      category: "Remittance",
-      date: "2026-07-18",
-      status: "Pending",
-      tag: "Pending review",
-      key: "482193",
-      remark: "Family support",
-    },
-    {
-      id: "TXN-1047",
-      owner: "demo",
-      sender: "Mulugeta A.",
-      senderPhone: "+1 202 555 0144",
-      from: "USA",
-      receiver: "Hana Worku",
-      receiverPhone: "+251 92 444 1188",
-      to: "Ethiopia",
-      account: "•••• 1229",
-      amount: 780,
-      currency: "USD",
-      rate: 132.2,
-      category: "Invoice",
-      date: "2026-07-15",
-      status: "Completed",
-      tag: "Verified",
-      key: "716204",
-      remark: "Design invoice",
-    },
-    {
-      id: "TXN-1046",
-      owner: "demo",
-      sender: "Abel Tesfaye",
-      senderPhone: "+971 50 123 4567",
-      from: "UAE",
-      receiver: "Meron Kassa",
-      receiverPhone: "+44 7700 900123",
-      to: "UK",
-      account: "•••• 7601",
-      amount: 4200,
-      currency: "AED",
-      rate: 0.21,
-      category: "Investment",
-      date: "2026-07-11",
-      status: "Completed",
-      tag: "Approved",
-      key: "903517",
-      remark: "July transfer",
-    },
-  ],
-  contacts: [
-    {
-      id: "c1",
-      owner: "demo",
-      name: "Sara Bekele",
-      phone: "+251 91 234 5678",
-      country: "Ethiopia",
-      color: "#d7a62b",
-    },
-    {
-      id: "c2",
-      owner: "demo",
-      name: "Hana Worku",
-      phone: "+251 92 444 1188",
-      country: "Ethiopia",
-      color: "#4c8ed9",
-    },
-  ],
-  messages: [
-    {
-      id: "m1",
-      owner: "demo",
-      contact: "c1",
-      sender: "them",
-      content: "Hi Abel, is the transfer ready?",
-      time: "10:24",
-    },
-    {
-      id: "m2",
-      owner: "demo",
-      contact: "c1",
-      sender: "me",
-      content: "It is in review. I’ll send the security key once approved.",
-      time: "10:26",
-    },
-  ],
+  users: [],
+  records: [],
+  contacts: [],
+  messages: [],
   notifications: [],
-  accessCodes: [
-    {
-      id: "code-demo",
-      code: "WELCOME-PRO-2026",
-      plan: "Pro",
-      status: "available",
-      paymentMethod: "Cash",
-      createdAt: "2026-07-18",
-    },
-  ],
+  accessCodes: [],
   adminConfig: {
     repositoryUrl: "https://github.com/lamek-star/Data-chat",
     paymentUrl: STRIPE_PAYMENT_LINK,
     supportEmail: "support@datachat.app",
   },
-  communities: [
-    {
-      id: "community-global",
-      name: "DataChat Global Community",
-      location: "Global",
-      purpose: "Trusted communication and financial education across regions.",
-      parentId: null,
-      level: 0,
-      createdBy: "admin",
-      permissions: { allowSubgroups: true, allowInvites: true },
-      members: ["demo"],
-      contactMembers: [],
-      admins: ["admin"],
-      createdAt: "2026-07-18T00:00:00.000Z",
-    },
-    {
-      id: "community-uae",
-      name: "UAE Habesha Network",
-      location: "UAE",
-      purpose: "Local support, trusted contacts and community coordination.",
-      parentId: "community-global",
-      level: 1,
-      createdBy: "admin",
-      permissions: { allowSubgroups: true, allowInvites: true },
-      members: ["demo"],
-      contactMembers: [],
-      admins: ["admin"],
-      createdAt: "2026-07-18T00:00:00.000Z",
-    },
-  ],
+  communities: [],
 };
 const load = () => {
   try {
     const saved = JSON.parse(localStorage.getItem(K));
     if (!saved) return seed;
-    const users = saved.users || [];
-    if (!users.some((x) => x.id === "free-demo")) users.push(seed.users[1]);
-    if (!users.some((x) => x.id === "admin")) users.push(seed.users[2]);
+    const demoOwners = new Set(["demo", "free-demo", "admin"]);
+    const users = (saved.users || []).filter((x) => !demoOwners.has(x.id));
     return {
       ...seed,
       ...saved,
       users,
-      accessCodes: saved.accessCodes || seed.accessCodes,
-      communities: saved.communities || seed.communities,
+      records: (saved.records || []).filter((x) => !demoOwners.has(x.owner)),
+      contacts: (saved.contacts || []).filter((x) => !demoOwners.has(x.owner)),
+      messages: (saved.messages || []).filter((x) => !demoOwners.has(x.owner)),
+      rateOffers: (saved.rateOffers || []).filter((x) => x.owner !== "market"),
+      accessCodes: (saved.accessCodes || []).filter((x) => x.id !== "code-demo"),
+      communities: (saved.communities || []).filter(
+        (x) => !["community-global", "community-uae"].includes(x.id),
+      ),
       adminConfig: { ...seed.adminConfig, ...(saved.adminConfig || {}) },
     };
   } catch {
@@ -755,11 +599,11 @@ async function requestNotificationPermission() {
     if (result.display !== "granted") return false;
     if (Capacitor.getPlatform() === "android") {
       await LocalNotifications.createChannel({
-        id: "datachat-messages",
+        id: "datachat-messages-v2",
         name: "DataChat messages",
         description: "New messages, transactions, and voice messages",
-        importance: 4,
-        visibility: 0,
+        importance: 5,
+        visibility: 1,
         vibration: true,
       }).catch(() => {});
     }
@@ -801,11 +645,11 @@ async function notifyIncomingMessage(senderName, message) {
   if (isNativeApp()) {
     if (Capacitor.getPlatform() === "android") {
       await LocalNotifications.createChannel({
-        id: "datachat-messages",
+        id: "datachat-messages-v2",
         name: "DataChat messages",
         description: "New messages, transactions, and voice messages",
-        importance: 4,
-        visibility: 0,
+        importance: 5,
+        visibility: 1,
         vibration: true,
       }).catch(() => {});
     }
@@ -817,7 +661,7 @@ async function notifyIncomingMessage(senderName, message) {
           id: Math.floor(Date.now() % 2147483647),
           title,
           body,
-          channelId: "datachat-messages",
+          channelId: "datachat-messages-v2",
           extra: { page: "home" },
         },
       ],
@@ -1514,7 +1358,6 @@ function LegacyAuth({ db, save, login }) {
             name="email"
             type="email"
             required
-            defaultValue={mode === "login" ? "demo@datachat.app" : ""}
             placeholder="you@example.com"
           />
         </label>
@@ -1525,7 +1368,6 @@ function LegacyAuth({ db, save, login }) {
             type="password"
             required
             minLength="6"
-            defaultValue={mode === "login" ? "demo123" : ""}
             placeholder="At least 6 characters"
           />
         </label>
@@ -1546,9 +1388,6 @@ function LegacyAuth({ db, save, login }) {
             ? "New to DataChat? Create account"
             : "Already registered? Sign in"}
         </button>
-        {mode === "login" && (
-          <div className="demo">Demo: demo@datachat.app / demo123</div>
-        )}
       </form>
     </div>
   );
@@ -1902,13 +1741,6 @@ function Auth({ db, save, login }) {
               Forgot password? Send recovery code
             </button>
           )}
-          {mode === "login" && !cloudConfigured && (
-            <div className="demo">
-              Pro demo: demo@datachat.app / demo123
-              <br />
-              Free demo: free@datachat.app / free123
-            </div>
-          )}
           {mode === "register" && db.adminConfig?.paymentUrl && false && (
             <a
               className="payment-link"
@@ -2179,56 +2011,6 @@ function PremiumGate({ feature, setPage }) {
     </div>
   );
 }
-const sampleOffers = [
-  {
-    id: "offer-1",
-    owner: "market",
-    provider: "Dawit Exchange",
-    contact: "@dawit.a",
-    fromCurrency: "USD",
-    toCurrency: "ETB",
-    rate: 151.5,
-    side: "Sell",
-    instrument: "Bank transfer",
-    min: 100,
-    max: 2500,
-    location: "Frankfurt · Asmara",
-    verified: true,
-    note: "Same-day confirmation during business hours.",
-  },
-  {
-    id: "offer-2",
-    owner: "market",
-    provider: "Semhar Remit",
-    contact: "@semhar.t",
-    fromCurrency: "EUR",
-    toCurrency: "ETB",
-    rate: 174.2,
-    side: "Sell",
-    instrument: "Cash pickup",
-    min: 50,
-    max: 1200,
-    location: "Asmara",
-    verified: true,
-    note: "Receiver ID required for collection.",
-  },
-  {
-    id: "offer-3",
-    owner: "market",
-    provider: "Red Sea Payments",
-    contact: "+971 50 555 0194",
-    fromCurrency: "AED",
-    toCurrency: "USD",
-    rate: 0.271,
-    side: "Buy",
-    instrument: "Mobile money",
-    min: 200,
-    max: 5000,
-    location: "Dubai",
-    verified: false,
-    note: "Rate confirmed again before order acceptance.",
-  },
-];
 function RatesMarketplace({ db, save, user, setToast, setPage }) {
   const [base, setBase] = useState("USD");
   const [market, setMarket] = useState("UAE");
@@ -2241,7 +2023,7 @@ function RatesMarketplace({ db, save, user, setToast, setPage }) {
   const [live, setLive] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [add, setAdd] = useState(false);
+  const [add, setAdd] = useState(null);
   const [search, setSearch] = useState("");
   const [refresh, setRefresh] = useState(0);
   const marketOptions = {
@@ -2347,7 +2129,7 @@ function RatesMarketplace({ db, save, user, setToast, setPage }) {
       });
     return () => controller.abort();
   }, [base, refresh]);
-  const offers = [...sampleOffers, ...(db.rateOffers || [])];
+  const offers = db.rateOffers || [];
   const visible = offers.filter((x) =>
     (x.provider + x.fromCurrency + x.toCurrency + x.instrument + x.location)
       .toLowerCase()
@@ -2402,7 +2184,7 @@ function RatesMarketplace({ db, save, user, setToast, setPage }) {
             className="primary"
             onClick={() =>
               user.plan === "Pro"
-                ? setAdd(true)
+                ? setAdd({})
                 : setToast("Publishing rates is a Pro feature")
             }
           >
@@ -2634,6 +2416,12 @@ function RatesMarketplace({ db, save, user, setToast, setPage }) {
               <Icon name="MessageCircle" />
               Message & place order
             </button>
+            {offer.owner === user.id && (
+              <button className="secondary" onClick={() => setAdd(offer)}>
+                <Icon name="Pencil" />
+                Update today’s rate
+              </button>
+            )}
           </article>
         ))}
       </div>
@@ -2653,6 +2441,7 @@ function RatesMarketplace({ db, save, user, setToast, setPage }) {
         <RateOfferModal
           user={user}
           save={save}
+          existing={add?.id ? add : null}
           close={() => setAdd(false)}
           setToast={setToast}
         />
@@ -2660,27 +2449,35 @@ function RatesMarketplace({ db, save, user, setToast, setPage }) {
     </div>
   );
 }
-function RateOfferModal({ user, save, close, setToast }) {
+function RateOfferModal({ user, save, existing, close, setToast }) {
   const submit = (e) => {
     e.preventDefault();
     const f = Object.fromEntries(new FormData(e.currentTarget));
     const offer = {
       ...f,
-      id: uid("offer"),
+      id: existing?.id || uid("offer"),
       owner: user.id,
       rate: +f.rate,
       min: +f.min,
       max: +f.max,
       verified: false,
-      createdAt: new Date().toISOString(),
+      createdAt: existing?.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      rateDate: new Date().toISOString().slice(0, 10),
     };
-    save((d) => ({ ...d, rateOffers: [...(d.rateOffers || []), offer] }));
-    setToast("Your market rate was published");
+    save((d) => ({
+      ...d,
+      rateOffers: [
+        ...(d.rateOffers || []).filter((item) => item.id !== offer.id),
+        offer,
+      ],
+    }));
+    setToast(existing ? "Today’s rate was updated" : "Your market rate was published");
     close();
   };
   const currencies = useCurrencyCodes(true);
   return (
-    <Modal title="Publish a market rate" close={close} wide>
+    <Modal title={existing ? "Update today’s market rate" : "Publish a market rate"} close={close} wide>
       <form className="form grid rate-form" onSubmit={submit}>
         <div className="full premium-note">
           <Icon name="Crown" />
@@ -2694,23 +2491,24 @@ function RateOfferModal({ user, save, close, setToast }) {
         </div>
         <label>
           Provider or display name
-          <input name="provider" required defaultValue={user.name} />
+          <input name="provider" required defaultValue={existing?.provider || user.name} />
         </label>
         <label>
           Contact information
           <input
             name="contact"
             required
+            defaultValue={existing?.contact || ""}
             placeholder="Phone, email or @username"
           />
         </label>
         <label>
           Location
-          <input name="location" required placeholder="City, country" />
+          <input name="location" required defaultValue={existing?.location || ""} placeholder="City, country" />
         </label>
         <label>
           Offer type
-          <select name="side">
+          <select name="side" defaultValue={existing?.side || "Sell"}>
             <option>Sell</option>
             <option>Buy</option>
             <option>Exchange</option>
@@ -2718,7 +2516,7 @@ function RateOfferModal({ user, save, close, setToast }) {
         </label>
         <label>
           From currency
-          <select name="fromCurrency">
+          <select name="fromCurrency" defaultValue={existing?.fromCurrency || "USD"}>
             {currencies.map((x) => (
               <option key={x} value={x}>{currencyLabel(x)}</option>
             ))}
@@ -2726,7 +2524,7 @@ function RateOfferModal({ user, save, close, setToast }) {
         </label>
         <label>
           To currency
-          <select name="toCurrency" defaultValue="ETB">
+          <select name="toCurrency" defaultValue={existing?.toCurrency || "ETB"}>
             {currencies.map((x) => (
               <option key={x} value={x}>{currencyLabel(x)}</option>
             ))}
@@ -2740,20 +2538,21 @@ function RateOfferModal({ user, save, close, setToast }) {
             min=".000001"
             step=".000001"
             required
+            defaultValue={existing?.rate ?? ""}
             placeholder="e.g. 151.50"
           />
         </label>
         <label>
           Minimum amount
-          <input name="min" type="number" min="0" required />
+          <input name="min" type="number" min="0" required defaultValue={existing?.min ?? ""} />
         </label>
         <label>
           Maximum amount
-          <input name="max" type="number" min="0" required />
+          <input name="max" type="number" min="0" required defaultValue={existing?.max ?? ""} />
         </label>
         <label>
           Financial instrument
-          <select name="instrument">
+          <select name="instrument" defaultValue={existing?.instrument || "Bank transfer"}>
             <option>Bank transfer</option>
             <option>Cash pickup</option>
             <option>Mobile money</option>
@@ -2768,6 +2567,7 @@ function RateOfferModal({ user, save, close, setToast }) {
           <textarea
             name="note"
             required
+            defaultValue={existing?.note || ""}
             placeholder="Fees, availability, settlement timing and identification requirements."
           />
         </label>
@@ -2784,7 +2584,7 @@ function RateOfferModal({ user, save, close, setToast }) {
           </button>
           <button className="primary">
             <Icon name="Send" />
-            Publish rate
+            {existing ? "Save updated rate" : "Publish rate"}
           </button>
         </div>
       </form>
@@ -3025,6 +2825,17 @@ function CommunityManager({ db, save, user, setToast }) {
       x.permissions?.allowSubgroups &&
       (x.members || []).includes(user.id),
   );
+  const hierarchyFor = (community) => {
+    const path = [];
+    const visited = new Set();
+    let current = community;
+    while (current && !visited.has(current.id)) {
+      visited.add(current.id);
+      path.unshift(current);
+      current = visibleCommunities.find((item) => item.id === current.parentId);
+    }
+    return path;
+  };
   const createGroup = async (e) => {
     e.preventDefault();
     if (user.plan !== "Pro")
@@ -3150,6 +2961,7 @@ function CommunityManager({ db, save, user, setToast }) {
       <div className="community-tree">
         {visibleCommunities.map((group) => {
           const parent = visibleCommunities.find((x) => x.id === group.parentId);
+          const hierarchy = hierarchyFor(group);
           const isMember = (group.members || []).includes(user.id);
           const pendingRequest = (group.joinRequests || []).some((request) => request.userId === user.id && request.status === "pending");
           const canManage =
@@ -3158,13 +2970,13 @@ function CommunityManager({ db, save, user, setToast }) {
           return (
             <article
               key={group.id}
-              style={{ "--depth": Math.min(group.level || 0, 3) }}
+              style={{ "--depth": Math.min(hierarchy.length - 1, 3) }}
             >
               <div className="community-path">
                 {parent ? (
                   <>
                     <Icon name="CornerDownRight" />
-                    Under {parent.name}
+                    {hierarchy.map((item) => item.name).join(" › ")}
                   </>
                 ) : (
                   <>
@@ -3193,7 +3005,7 @@ function CommunityManager({ db, save, user, setToast }) {
                     </span>
                     <span>
                       <Icon name="ShieldCheck" />
-                      Level {group.level || 0}
+                      Level {Math.max(0, hierarchy.length - 1)}
                     </span>
                   </div>
                 </div>
@@ -3337,7 +3149,6 @@ function Home({ db, save, user, setToast, setPage }) {
     [add, setAdd] = useState(false),
     [report, setReport] = useState(null),
     [attachments, setAttachments] = useState(false),
-    [showNotifications, setShowNotifications] = useState(false),
     [messageAction, setMessageAction] = useState(null),
     [editingMessage, setEditingMessage] = useState(null),
     [draft, setDraft] = useState("");
@@ -3666,16 +3477,6 @@ function Home({ db, save, user, setToast, setPage }) {
           }
           actions={
             <>
-              <button
-                className="icon-btn notification-button"
-                aria-label="Notifications"
-                onClick={() => setShowNotifications(true)}
-              >
-                <Icon name="Bell" />
-                {(db.notifications || []).some(
-                  (item) => item.owner === user.id && !item.read,
-                ) && <span aria-label="Unread notifications" />}
-              </button>
               <MyContactQr user={user} setToast={setToast} />
               <button className="primary compact" onClick={() => setAdd(true)}>
                 <Icon name="UserPlus" />
@@ -3765,6 +3566,19 @@ function Home({ db, save, user, setToast, setPage }) {
               <ContactQr c={c} setToast={setToast} />
               <button
                 className="icon-btn"
+                title={c.phone ? `Call ${c.name}` : "No phone number available"}
+                aria-label={`Voice call ${c.name}`}
+                disabled={!c.phone}
+                onClick={() => {
+                  if (!c.phone) return;
+                  if (window.confirm(`Start a voice call with ${c.name}?`))
+                    window.location.href = `tel:${String(c.phone).replace(/[^+\d]/g, "")}`;
+                }}
+              >
+                <Icon name="Phone" />
+              </button>
+              <button
+                className="icon-btn"
                 title="Report or block user"
                 aria-label="Report or block user"
                 onClick={() => setReport(c)}
@@ -3782,6 +3596,7 @@ function Home({ db, save, user, setToast, setPage }) {
                     save={save}
                     user={user}
                     setToast={setToast}
+                    onActions={() => setMessageAction(m)}
                   />
                 ) : (
                   <div key={m.id} className={"bubble " + m.sender}>
@@ -3978,57 +3793,6 @@ function Home({ db, save, user, setToast, setPage }) {
           close={() => setAdd(false)}
           setToast={setToast}
         />
-      )}
-      {showNotifications && (
-        <Modal
-          title="Message notifications"
-          close={() => setShowNotifications(false)}
-        >
-          <div className="notification-list">
-            {(db.notifications || [])
-              .filter((item) => item.owner === user.id)
-              .slice(0, 50)
-              .map((item) => (
-                <button
-                  key={item.id}
-                  className={item.read ? "" : "unread"}
-                  onClick={() => {
-                    save((current) => {
-                      const notifications = (current.notifications || []).map(
-                        (notification) =>
-                          notification.id === item.id
-                            ? { ...notification, read: true }
-                            : notification,
-                      );
-                      localStorage.setItem(
-                        `dc-notifications-${user.id}`,
-                        JSON.stringify(notifications.slice(0, 100)),
-                      );
-                      return { ...current, notifications };
-                    });
-                    setShowNotifications(false);
-                  }}
-                >
-                  <Icon name="MessageCircle" />
-                  <span>
-                    <b>{item.title || "New DataChat message"}</b>
-                    <small>
-                      {new Date(item.createdAt).toLocaleString()}
-                    </small>
-                  </span>
-                </button>
-              ))}
-            {!(db.notifications || []).some(
-              (item) => item.owner === user.id,
-            ) && (
-              <Empty
-                icon="Bell"
-                title="No notifications"
-                text="New messages and shared transactions will appear here."
-              />
-            )}
-          </div>
-        </Modal>
       )}
       {report && (
         <ReportUser
@@ -5037,11 +4801,9 @@ function RecordRow({ r, edit, del, update, handoff, share }) {
     </tr>
   );
 }
-function TransactionChatCard({ message, db, save, user, setToast }) {
+function TransactionChatCard({ message, db, save, user, setToast, onActions }) {
   const [qr, setQr] = useState("");
-  const [expanded, setExpanded] = useState(() =>
-    window.matchMedia("(hover: none)").matches,
-  );
+  const [expanded, setExpanded] = useState(false);
   const [keyVisible, setKeyVisible] = useState(false);
   const data = message.transaction;
   const existingRecord = db.records.find(
@@ -5108,6 +4870,14 @@ function TransactionChatCard({ message, db, save, user, setToast }) {
         </span>
         <small>{message.time}</small>
         <button
+          type="button"
+          className="transaction-toggle"
+          onClick={onActions}
+          aria-label="Transaction message actions"
+        >
+          <Icon name="MoreVertical" />
+        </button>
+        <button
           className="transaction-toggle"
           onClick={() => setExpanded((x) => !x)}
           aria-expanded={expanded}
@@ -5120,6 +4890,18 @@ function TransactionChatCard({ message, db, save, user, setToast }) {
           <Icon name={expanded ? "ChevronUp" : "ChevronDown"} />
         </button>
       </div>
+      {!expanded && (
+        <button
+          type="button"
+          className="transaction-preview"
+          onClick={() => setExpanded(true)}
+          aria-label={`Open full transaction ${data.reference}`}
+        >
+          <span><small>Receiver</small><b>{data.receiver}</b></span>
+          <span><small>Amount</small><b>{data.amount} {data.currency}</b></span>
+          <Icon name="ChevronRight" />
+        </button>
+      )}
       <div className="transaction-message-body">
         {qr && (
           <img
@@ -6489,6 +6271,7 @@ function Settings({
     [billingBusy, setBillingBusy] = useState(false),
     [billingError, setBillingError] = useState(""),
     [permissionStatus, setPermissionStatus] = useState(""),
+    [permissionRequest, setPermissionRequest] = useState(null),
     [verifyEmailOpen, setVerifyEmailOpen] = useState(false),
     [verifyEmailSent, setVerifyEmailSent] = useState(false),
     [verifyEmailBusy, setVerifyEmailBusy] = useState(false);
@@ -6751,18 +6534,7 @@ function Settings({
           >
             <button
               className="secondary"
-              onClick={async () => {
-                try {
-                  const granted = await requestNotificationPermission();
-                  setPermissionStatus(
-                    granted
-                      ? "Notifications enabled"
-                      : "Notification permission was not granted",
-                  );
-                } catch (error) {
-                  setPermissionStatus(error.message);
-                }
-              }}
+              onClick={() => setPermissionRequest("notifications")}
             >
               Enable
             </button>
@@ -6774,17 +6546,7 @@ function Settings({
           >
             <button
               className="secondary"
-              onClick={async () => {
-                try {
-                  const stream = await requestMicrophonePermission();
-                  stream.getTracks().forEach((track) => track.stop());
-                  setPermissionStatus("Microphone enabled");
-                } catch (error) {
-                  setPermissionStatus(
-                    `Microphone permission is blocked: ${error.message}`,
-                  );
-                }
-              }}
+              onClick={() => setPermissionRequest("microphone")}
             >
               Check
             </button>
@@ -6793,7 +6555,6 @@ function Settings({
             <p className="form-note">{permissionStatus}</p>
           )}
           {isNativeApp() &&
-            permissionStatus.toLowerCase().includes("microphone") &&
             permissionStatus.toLowerCase().includes("blocked") && (
               <button
                 type="button"
@@ -6924,7 +6685,7 @@ function Settings({
             </div>
             <div>
               <dt>Version</dt>
-              <dd>1.3.2</dd>
+              <dd>1.3.3</dd>
             </div>
             <div>
               <dt>Plan</dt>
@@ -6941,6 +6702,47 @@ function Settings({
           </button>
         </section>
       </div>
+      {permissionRequest && (
+        <Modal
+          title={permissionRequest === "notifications" ? "Enable message alerts" : "Enable voice messages"}
+          close={() => setPermissionRequest(null)}
+        >
+          <div className="permission-consent">
+            <span className="permission-consent-icon">
+              <Icon name={permissionRequest === "notifications" ? "BellRing" : "Mic"} size={32} />
+            </span>
+            <h3>{permissionRequest === "notifications" ? "Never miss a new message" : "Record and send your voice"}</h3>
+            <p>
+              {permissionRequest === "notifications"
+                ? "DataChat will ask Android to show private, high-priority message alerts. You can change this later in phone settings."
+                : "DataChat uses the microphone only while you are recording a voice message. Recording stops when you tap stop or leave the chat."}
+            </p>
+            <button
+              className="primary full-btn"
+              onClick={async () => {
+                const requested = permissionRequest;
+                setPermissionRequest(null);
+                try {
+                  if (requested === "notifications") {
+                    const granted = await requestNotificationPermission();
+                    setPermissionStatus(granted ? "Notifications enabled" : "Notification permission was not granted");
+                  } else {
+                    const stream = await requestMicrophonePermission();
+                    stream.getTracks().forEach((track) => track.stop());
+                    setPermissionStatus("Microphone enabled");
+                  }
+                } catch (error) {
+                  setPermissionStatus(`${requested === "microphone" ? "Microphone" : "Notification"} permission is blocked: ${error.message}`);
+                }
+              }}
+            >
+              <Icon name="ShieldCheck" />
+              Continue to phone permission
+            </button>
+            <button className="secondary full-btn" onClick={() => setPermissionRequest(null)}>Not now</button>
+          </div>
+        </Modal>
+      )}
       {verifyEmailOpen && (
         <Modal
           title="Verify your email"

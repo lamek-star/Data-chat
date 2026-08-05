@@ -1,7 +1,7 @@
 {
   "name": "datachat",
   "private": true,
-  "version": "1.3.2",
+  "version": "1.3.3",
   "type": "module",
   "scripts": {
     "dev": "concurrently --kill-others-on-fail \"vite\" \"node server/index.js\"",
@@ -39,7 +39,9 @@
     "react-dom": "latest",
     "recharts": "latest",
     "stripe": "^22.3.2",
-    "vite": "latest",
-    "wrangler": "^4.26.1"
+    "vite": "latest"
+  },
+  "devDependencies": {
+    "wrangler": "^4.118.0"
   }
 }

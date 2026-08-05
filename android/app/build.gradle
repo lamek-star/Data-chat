@@ -24,8 +24,8 @@ android {
         applicationId "com.lamekstar.datachat"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 5
-        versionName "1.3.2"
+        versionCode 6
+        versionName "1.3.3"
         // The direct-download APK targets the CPU architecture used by
         // current Android phones. Google Play will generate other splits
         // from the app bundle when an upload key is configured.
@@ -88,13 +88,14 @@ apply from: 'capacitor.build.gradle'
 tasks.register('removeEmbeddedDownloadArtifacts', Delete) {
     delete file('src/main/assets/public/downloads')
 }
-tasks.register('prepareMobileAssets', Copy) {
-    doNotTrackState("Copies OneDrive-backed Capacitor assets to a regular local build directory")
-    from file('src/main/assets')
-    into preparedMobileAssetsDir
-    exclude 'public/downloads/**'
-    doFirst {
+tasks.register('prepareMobileAssets') {
+    doLast {
         delete preparedMobileAssetsDir
+        ant.copy(todir: preparedMobileAssetsDir) {
+            fileset(dir: file('src/main/assets')) {
+                exclude(name: 'public/downloads/**')
+            }
+        }
     }
 }
 tasks.named('preBuild').configure {

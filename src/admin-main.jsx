@@ -39,7 +39,7 @@ import {
 } from "./cloud/supabaseClient";
 
 const KEY = "datachat-v1";
-const sampleAdmin = {
+const fixedAdministrator = {
   id: "admin",
   name: "DataChat Administrator",
   username: "datachat-harmony",
@@ -64,7 +64,7 @@ async function verifyAdminCredential(password, credential) {
   return (await deriveAdminHash(password, decodeBytes(credential.salt))) === credential.hash;
 }
 const emptyAdminDb = {
-  users: [sampleAdmin],
+  users: [fixedAdministrator],
   accessCodes: [],
   communities: [],
   recoveryBackups: [],
@@ -84,7 +84,7 @@ const read = () => {
       ...saved,
       users: users.some((user) => user.role === "admin")
         ? users
-        : [...users, sampleAdmin],
+        : [...users, fixedAdministrator],
       accessCodes: saved.accessCodes || [],
       communities: saved.communities || [],
       recoveryBackups: saved.recoveryBackups || [],

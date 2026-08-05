@@ -34,11 +34,11 @@ const result = await command("Runtime.evaluate", {
     const notification = await plugins.LocalNotifications.checkPermissions();
     if (notification.display === "granted") {
       await plugins.LocalNotifications.createChannel({
-        id: "datachat-messages",
+        id: "datachat-messages-v2",
         name: "DataChat messages",
         description: "Native verification channel",
-        importance: 4,
-        visibility: 0,
+        importance: 5,
+        visibility: 1,
         vibration: true
       });
       await plugins.LocalNotifications.schedule({
@@ -46,7 +46,7 @@ const result = await command("Runtime.evaluate", {
           id: 132005,
           title: "DataChat verification",
           body: "Notification permission is working",
-          channelId: "datachat-messages",
+          channelId: "datachat-messages-v2",
           extra: { verification: true }
         }]
       });

@@ -481,6 +481,28 @@ header p,
 .transaction-message-head small {
   color: var(--muted);
 }
+.transaction-preview {
+  width: 100%;
+  min-height: 72px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 28px;
+  gap: 12px;
+  align-items: center;
+  padding: 12px 14px;
+  border: 0;
+  color: white;
+  text-align: left;
+  background: #101d30;
+}
+.transaction-preview span { display: grid; gap: 3px; min-width: 0; }
+.transaction-preview small {
+  color: var(--muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .55px;
+}
+.transaction-preview b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.transaction-preview svg { color: var(--gold2); }
 .transaction-message-body {
   display: grid;
   grid-template-columns: 124px 1fr;
@@ -490,6 +512,8 @@ header p,
   padding-block: 0;
   opacity: 0;
   overflow: hidden;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
   transition:
     max-height 240ms ease,
     opacity 180ms ease,
@@ -558,9 +582,10 @@ header p,
 .transaction-message:hover .transaction-message-body,
 .transaction-message:focus-within .transaction-message-body,
 .transaction-message.expanded .transaction-message-body {
-  max-height: 260px;
+  max-height: min(430px, 58vh);
   padding-block: 14px;
   opacity: 1;
+  overflow-y: auto;
 }
 .transaction-message:hover .transaction-add,
 .transaction-message:focus-within .transaction-add,
@@ -891,6 +916,25 @@ header p,
 .notification-list > button svg { color: var(--gold2); }
 .notification-list > button span { display: grid; gap: 4px; min-width: 0; }
 .notification-list > button small { color: var(--muted); }
+.permission-consent {
+  display: grid;
+  justify-items: center;
+  gap: 14px;
+  padding: 28px 22px 22px;
+  text-align: center;
+}
+.permission-consent-icon {
+  width: 72px;
+  height: 72px;
+  display: grid;
+  place-items: center;
+  border-radius: 22px;
+  color: #f3cb61;
+  background: linear-gradient(145deg, #293a55, #15243a);
+  box-shadow: 0 14px 34px #0005;
+}
+.permission-consent h3 { margin: 4px 0 0; }
+.permission-consent p { margin: 0 0 6px; max-width: 380px; color: var(--muted); line-height: 1.55; }
 .offline-banner {
   display: flex;
   align-items: center;
@@ -3527,19 +3571,12 @@ dd {
   }
 }
 @media (hover: none) {
-  .transaction-message:hover .transaction-message-body {
-    max-height: 0;
-    padding-block: 0;
-    opacity: 0;
-  }
-  .transaction-message:hover .transaction-add {
-    display: none;
-  }
   .transaction-message.expanded .transaction-message-body,
   .transaction-message:focus-within .transaction-message-body {
-    max-height: 260px;
+    max-height: min(430px, 58vh);
     padding-block: 14px;
     opacity: 1;
+    overflow-y: auto;
   }
   .transaction-message.expanded .transaction-add,
   .transaction-message:focus-within .transaction-add {
