@@ -517,7 +517,7 @@ header p,
   max-height: 0;
   padding-block: 0;
   opacity: 0;
-  overflow: hidden;
+  overflow: clip;
   overscroll-behavior: contain;
   scrollbar-width: thin;
   transition:
@@ -525,6 +525,64 @@ header p,
     opacity 180ms ease,
     padding 240ms ease;
 }
+.transaction-message.expanded .transaction-message-body,
+.transaction-message:focus-within .transaction-message-body {
+  max-height: 1200px;
+  padding-block: 14px;
+  opacity: 1;
+  overflow: visible;
+}
+.transaction-time { display: inline-flex; align-items: center; gap: 4px; }
+.message-date {
+  display: flex;
+  justify-content: center;
+  margin: 12px 0 8px;
+}
+.message-date span {
+  padding: 5px 11px;
+  border: 1px solid #2a3a52;
+  border-radius: 999px;
+  background: #0c1828e8;
+  color: #aebbd0;
+  font-size: 11px;
+  font-weight: 700;
+}
+.bubble small { display: flex; justify-content: flex-end; align-items: center; gap: 4px; }
+.message-receipt { display: inline-flex; color: #9cabc0; }
+.message-receipt.read { color: #52b7ff; }
+.call-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: max(20px, env(safe-area-inset-top)) 20px max(20px, env(safe-area-inset-bottom));
+  background: linear-gradient(180deg, #07101ff5, #020812fa);
+}
+.call-card {
+  width: min(360px, 100%);
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+  padding: 36px 24px 28px;
+  text-align: center;
+}
+.call-card .user-avatar, .call-card .avatar { width: 96px; height: 96px; font-size: 30px; }
+.call-card h2, .call-card p { margin: 0; }
+.call-card p { color: #c4cee0; }
+.call-card > small { max-width: 290px; color: #8f9db3; line-height: 1.45; }
+.call-actions { display: flex; gap: 40px; margin: 24px 0 12px; }
+.call-actions button {
+  width: 64px;
+  height: 64px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  color: white;
+}
+.call-accept { background: #25a866; }
+.call-end { background: #e34e59; }
 .transaction-message-body img {
   width: 124px;
   aspect-ratio: 1;
@@ -3547,16 +3605,21 @@ dd {
     grid-template-columns: 1fr;
   }
   .transaction-message {
-    width: 94%;
+    width: min(96%, 430px);
+    max-width: calc(100vw - 24px);
   }
   .transaction-message-body {
-    grid-template-columns: 92px 1fr;
-    gap: 10px;
-    padding: 10px;
+    grid-template-columns: 1fr;
+    gap: 12px;
+    padding-inline: 12px;
   }
   .transaction-message-body img {
-    width: 92px;
+    width: min(180px, 58vw);
+    justify-self: center;
   }
+  .transaction-preview { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 24px; gap: 8px; padding-inline: 12px; }
+  .transaction-message-body dl { min-width: 0; }
+  .transaction-message-head { padding-inline: 12px; }
   .community-title {
     align-items: stretch;
     flex-direction: column;
@@ -3581,10 +3644,10 @@ dd {
 @media (hover: none) {
   .transaction-message.expanded .transaction-message-body,
   .transaction-message:focus-within .transaction-message-body {
-    max-height: min(430px, 58vh);
+    max-height: 1200px;
     padding-block: 14px;
     opacity: 1;
-    overflow-y: auto;
+    overflow: visible;
   }
   .transaction-message.expanded .transaction-add,
   .transaction-message:focus-within .transaction-add {

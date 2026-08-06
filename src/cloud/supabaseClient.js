@@ -593,12 +593,21 @@ export async function respondContactRequest(requestId, accept) {
 
 export async function addContactByQr(userId, contactCode) {
   const client = requireSupabase();
-  const { data, error } = await client.rpc("add_datachat_contact_by_qr", {
+  const { data, error } = await client.rpc("connect_datachat_contact_by_qr", {
     requested_user_id: userId,
     requested_contact_code: String(contactCode || "").trim().toUpperCase(),
   });
   if (error) throw error;
   return data;
+}
+
+export async function markDirectConversationRead(senderId) {
+  const client = requireSupabase();
+  const { data, error } = await client.rpc("mark_datachat_conversation_read", {
+    requested_sender_id: senderId,
+  });
+  if (error) throw error;
+  return data || 0;
 }
 
 export async function removeCloudContact(contactUserId) {
@@ -826,6 +835,42 @@ export function subscribeToCommunityNetwork(callback) {
       "postgres_changes",
       { event: "*", schema: "public", table: "communities" },
       callback,
+    )
+    .subscribe();
+}
+
+export async function sendCallSignal(recipientId, callId, kind, payload = {}) {
+  const client = requireSupabase();
+  const { data: authData } = await client.auth.getUser();
+  if (!authData.user) throw new Error("Sign in again.");
+  const { data, error } = await client
+    .from("call_signals")
+    .insert({
+      call_id: callId,
+      sender_id: authData.user.id,
+      recipient_id: recipientId,
+      kind,
+      payload,
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export function subscribeToCallSignals(userId, callback) {
+  const client = requireSupabase();
+  return client
+    .channel(`datachat-calls-${userId}`)
+    .on(
+      "postgres_changes",
+      {
+        event: "INSERT",
+        schema: "public",
+        table: "call_signals",
+        filter: `recipient_id=eq.${userId}`,
+      },
+      ({ new: row }) => callback(row),
     )
     .subscribe();
 }

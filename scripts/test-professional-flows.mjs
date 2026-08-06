@@ -134,6 +134,29 @@ try {
     .eq("contact_user_id", receiverUser.id);
   if (countError) throw countError;
   check(count === 1, "duplicate contacts are prevented");
+  const { data: qrConnected, error: qrConnectError } = await sender.rpc(
+    "connect_datachat_contact_by_qr",
+    { requested_user_id: receiverUser.id, requested_contact_code: receiverProfile.contact_code },
+  );
+  if (qrConnectError) throw qrConnectError;
+  check(
+    qrConnected.id === receiverUser.id && qrConnected.contact_code === receiverProfile.contact_code,
+    "QR contact connection is atomic and returns the saved profile",
+  );
+
+  const callId = crypto.randomUUID();
+  const { error: callSignalError } = await sender.from("call_signals").insert({
+    call_id: callId,
+    sender_id: senderUser.id,
+    recipient_id: receiverUser.id,
+    kind: "offer",
+    payload: { test: true },
+  });
+  if (callSignalError) throw callSignalError;
+  const { data: callSignal, error: callReadError } = await receiver
+    .from("call_signals").select("call_id,kind").eq("call_id", callId).single();
+  if (callReadError) throw callReadError;
+  check(callSignal.kind === "offer", "contacts can exchange private voice-call signals");
 
   const { error: ratingError } = await sender.from("customer_ratings").upsert(
     { owner_id: senderUser.id, rated_user_id: receiverUser.id, rating: 4, note: "Good" },
@@ -163,6 +186,12 @@ try {
     .single();
   if (receivedError) throw receivedError;
   check(received.payload.content === "E2E", "direct messages cross user accounts");
+  const { data: readCount, error: readReceiptError } = await receiver.rpc(
+    "mark_datachat_conversation_read",
+    { requested_sender_id: senderUser.id },
+  );
+  if (readReceiptError) throw readReceiptError;
+  check(readCount >= 1, "message read receipts persist for the sender");
   const { error: duplicateMessageError } = await sender.from("direct_messages").insert({
     id: messageId,
     sender_id: senderUser.id,

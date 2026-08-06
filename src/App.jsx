@@ -58,10 +58,13 @@ import {
   sendContactRequest,
   respondContactRequest,
   addContactByQr,
+  markDirectConversationRead,
   saveCustomerRating,
   deleteCustomerRating,
   uploadVoiceMessage,
   createVoicePlaybackUrl,
+  sendCallSignal,
+  subscribeToCallSignals,
 } from "./cloud/supabaseClient";
 import * as I from "lucide-react";
 import QRCode from "qrcode";
@@ -282,6 +285,14 @@ async function loadCloudDb(authUser) {
       contact: contact.id,
       sender: row.sender_id === authUser.id ? "me" : "them",
       cloudMessage: true,
+      createdAt: row.created_at,
+      readAt: row.read_at,
+      deliveryStatus:
+        row.sender_id === authUser.id
+          ? row.read_at
+            ? "read"
+            : "delivered"
+          : undefined,
       time:
         row.payload?.time ||
         new Date(row.created_at).toLocaleTimeString([], {
@@ -822,7 +833,7 @@ function App() {
             ...current,
             messages: current.messages.map((message) =>
               message.id === item.message.id
-                ? { ...message, deliveryStatus: "sent" }
+                ? { ...message, deliveryStatus: "delivered" }
                 : message,
             ),
           }));
@@ -952,7 +963,7 @@ function App() {
     if (!cloudConfigured || !cloudAuthUser) return;
     const receive = async ({ eventType, new: row }) => {
       if (!row) return;
-      if (eventType === "UPDATE") {
+        if (eventType === "UPDATE") {
         setDb((current) => ({
           ...current,
           messages: current.messages.map((message) =>
@@ -963,6 +974,11 @@ function App() {
                   voiceUrl: row.payload?.voicePath
                     ? message.voiceUrl
                     : null,
+                  readAt: row.read_at || message.readAt,
+                  deliveryStatus:
+                    message.sender === "me" && row.read_at
+                      ? "read"
+                      : message.deliveryStatus,
                 }
               : message,
           ),
@@ -988,6 +1004,8 @@ function App() {
           contact: contact.id,
           sender: "them",
           cloudMessage: true,
+          createdAt: row.created_at,
+          readAt: row.read_at,
           time:
             row.payload?.time ||
             new Date(row.created_at).toLocaleTimeString([], {
@@ -3001,13 +3019,16 @@ function CommunityManager({ db, save, user, setToast }) {
           const canManage =
             (group.admins || []).includes(user.id) ||
             group.createdBy === user.id;
+          const hasAccess = isMember || canManage;
           return (
             <article
               key={group.id}
               style={{ "--depth": Math.min(hierarchy.length - 1, 3) }}
             >
               <div className="community-path">
-                {parent ? (
+                {!hasAccess ? (
+                  <><Icon name="LockKeyhole" /> Restricted hierarchy</>
+                ) : parent ? (
                   <>
                     <Icon name="CornerDownRight" />
                     {hierarchy.map((item) => item.name).join(" › ")}
@@ -3025,22 +3046,23 @@ function CommunityManager({ db, save, user, setToast }) {
                 </span>
                 <div>
                   <h3>{group.name}</h3>
-                  <p>{group.purpose}</p>
+                  <p>{hasAccess ? group.purpose : "Request access to see this community’s hierarchy, purpose and member information."}</p>
                   <div className="community-meta">
-                    <span>
+                    {hasAccess && <span>
                       <Icon name="MapPin" />
                       {group.location}
-                    </span>
-                    <span>
+                    </span>}
+                    {hasAccess && <span>
                       <Icon name="Users" />
                       {(group.members || []).length +
                         (group.contactMembers || []).length}{" "}
                       members
-                    </span>
-                    <span>
+                    </span>}
+                    {hasAccess && <span>
                       <Icon name="ShieldCheck" />
                       Level {Math.max(0, hierarchy.length - 1)}
-                    </span>
+                    </span>}
+                    {!hasAccess && <span><Icon name="Shield" /> Owner approval required</span>}
                   </div>
                 </div>
               </div>
@@ -3179,8 +3201,37 @@ function CommunityManager({ db, save, user, setToast }) {
     </section>
   );
 }
+function messageDay(value) {
+  const date = new Date(value || Date.now());
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  if (date.toDateString() === today.toDateString()) return "Today";
+  if (date.toDateString() === yesterday.toDateString()) return "Yesterday";
+  return date.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short", year: date.getFullYear() !== today.getFullYear() ? "numeric" : undefined });
+}
+function MessageReceipt({ status }) {
+  if (!status || status === "sent") return null;
+  const read = status === "read";
+  return (
+    <span className={`message-receipt ${read ? "read" : ""}`} title={status} aria-label={`Message ${status}`}>
+      <Icon name={status === "queued" ? "Clock3" : status === "sending" ? "Clock" : "CheckCheck"} size={14} />
+    </span>
+  );
+}
 function Home({ db, save, user, setToast, setPage }) {
-  const contacts = db.contacts.filter((x) => x.owner === user.id),
+  const latestMessageAt = (contactId) => {
+    const last = [...db.messages]
+      .reverse()
+      .find((message) => message.owner === user.id && message.contact === contactId);
+    return last ? new Date(last.createdAt || last.time || 0).getTime() || 0 : 0;
+  };
+  const contacts = db.contacts
+    .filter((x) => x.owner === user.id)
+    .sort((a, b) => {
+      const recentDifference = latestMessageAt(b.id) - latestMessageAt(a.id);
+      return recentDifference || a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+    }),
     [selected, setSelected] = useState(() =>
       window.matchMedia("(max-width: 760px)").matches
         ? null
@@ -3192,13 +3243,18 @@ function Home({ db, save, user, setToast, setPage }) {
     [attachments, setAttachments] = useState(false),
     [messageAction, setMessageAction] = useState(null),
     [editingMessage, setEditingMessage] = useState(null),
-    [draft, setDraft] = useState("");
+    [draft, setDraft] = useState(""),
+    [voiceCall, setVoiceCall] = useState(null);
   const messagesRef = useRef(null);
   const recorderRef = useRef(null);
   const recordingChunksRef = useRef([]);
   const recordingStartedRef = useRef(0);
   const [recording, setRecording] = useState(false);
   const [online, setOnline] = useState(navigator.onLine !== false);
+  const callPeerRef = useRef(null);
+  const callStreamRef = useRef(null);
+  const remoteAudioRef = useRef(null);
+  const pendingIceRef = useRef([]);
   const c = contacts.find((x) => x.id === selected),
     msgs = db.messages.filter(
       (x) => x.owner === user.id && x.contact === selected,
@@ -3213,6 +3269,23 @@ function Home({ db, save, user, setToast, setPage }) {
     };
   }, [c]);
   useEffect(() => {
+    if (!c?.remoteUserId || navigator.onLine === false) return;
+    markDirectConversationRead(c.remoteUserId)
+      .then(() => {
+        save((state) => ({
+          ...state,
+          messages: state.messages.map((message) =>
+            message.owner === user.id &&
+            message.contact === c.id &&
+            message.sender === "them"
+              ? { ...message, readAt: message.readAt || new Date().toISOString() }
+              : message,
+          ),
+        }));
+      })
+      .catch(() => {});
+  }, [c?.remoteUserId, msgs.length]);
+  useEffect(() => {
     const connected = () => setOnline(true);
     const disconnected = () => setOnline(false);
     window.addEventListener("online", connected);
@@ -3222,6 +3295,102 @@ function Home({ db, save, user, setToast, setPage }) {
       window.removeEventListener("offline", disconnected);
     };
   }, []);
+  const releaseVoiceCall = () => {
+    callPeerRef.current?.close();
+    callPeerRef.current = null;
+    callStreamRef.current?.getTracks().forEach((track) => track.stop());
+    callStreamRef.current = null;
+    pendingIceRef.current = [];
+    setVoiceCall(null);
+  };
+  const createCallPeer = async (recipientId, callId) => {
+    if (!window.RTCPeerConnection)
+      throw new Error("Internet calling is not supported on this device.");
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      video: false,
+    });
+    callStreamRef.current = stream;
+    const peer = new RTCPeerConnection({
+      iceServers: [{ urls: ["stun:stun.cloudflare.com:3478", "stun:stun.l.google.com:19302"] }],
+      bundlePolicy: "max-bundle",
+    });
+    stream.getTracks().forEach((track) => peer.addTrack(track, stream));
+    peer.ontrack = (event) => {
+      if (remoteAudioRef.current) remoteAudioRef.current.srcObject = event.streams[0];
+    };
+    peer.onicecandidate = (event) => {
+      if (event.candidate)
+        sendCallSignal(recipientId, callId, "ice", { candidate: event.candidate.toJSON() }).catch(() => {});
+    };
+    peer.onconnectionstatechange = () => {
+      if (peer.connectionState === "connected")
+        setVoiceCall((current) => current ? { ...current, status: "connected" } : current);
+      if (["failed", "closed"].includes(peer.connectionState)) releaseVoiceCall();
+    };
+    callPeerRef.current = peer;
+    return peer;
+  };
+  const startVoiceCall = async (contact) => {
+    if (!contact?.remoteUserId) return setToast("Internet calls require a registered DataChat contact.");
+    if (navigator.onLine === false) return setToast("Connect to the internet to start a voice call.");
+    const callId = crypto.randomUUID();
+    try {
+      setVoiceCall({ callId, contact, direction: "outgoing", status: "calling" });
+      const peer = await createCallPeer(contact.remoteUserId, callId);
+      const offer = await peer.createOffer({ offerToReceiveAudio: true });
+      await peer.setLocalDescription(offer);
+      await sendCallSignal(contact.remoteUserId, callId, "offer", { sdp: peer.localDescription });
+    } catch (error) {
+      releaseVoiceCall();
+      setToast(`Call could not start: ${error.message}`);
+    }
+  };
+  const acceptVoiceCall = async () => {
+    const current = voiceCall;
+    if (!current?.offer) return;
+    try {
+      setVoiceCall({ ...current, status: "connecting" });
+      const peer = await createCallPeer(current.contact.remoteUserId, current.callId);
+      await peer.setRemoteDescription(current.offer);
+      const answer = await peer.createAnswer();
+      await peer.setLocalDescription(answer);
+      await sendCallSignal(current.contact.remoteUserId, current.callId, "answer", { sdp: peer.localDescription });
+      for (const candidate of pendingIceRef.current.splice(0)) await peer.addIceCandidate(candidate).catch(() => {});
+    } catch (error) {
+      setToast(`Call could not connect: ${error.message}`);
+      releaseVoiceCall();
+    }
+  };
+  const endVoiceCall = async (decline = false) => {
+    if (voiceCall?.contact?.remoteUserId)
+      await sendCallSignal(voiceCall.contact.remoteUserId, voiceCall.callId, decline ? "decline" : "end").catch(() => {});
+    releaseVoiceCall();
+  };
+  useEffect(() => {
+    if (!cloudConfigured || !user?.id) return;
+    const channel = subscribeToCallSignals(user.id, async (signal) => {
+      const contact = contacts.find((item) => item.remoteUserId === signal.sender_id);
+      if (!contact) return;
+      if (signal.kind === "offer" && !voiceCall) {
+        setVoiceCall({ callId: signal.call_id, contact, direction: "incoming", status: "ringing", offer: signal.payload?.sdp });
+        return;
+      }
+      if (!voiceCall || signal.call_id !== voiceCall.callId) return;
+      if (signal.kind === "answer" && callPeerRef.current) {
+        await callPeerRef.current.setRemoteDescription(signal.payload?.sdp).catch(() => {});
+        for (const candidate of pendingIceRef.current.splice(0)) await callPeerRef.current.addIceCandidate(candidate).catch(() => {});
+      } else if (signal.kind === "ice" && signal.payload?.candidate) {
+        if (callPeerRef.current?.remoteDescription)
+          await callPeerRef.current.addIceCandidate(signal.payload.candidate).catch(() => {});
+        else pendingIceRef.current.push(signal.payload.candidate);
+      } else if (["end", "decline"].includes(signal.kind)) {
+        setToast(signal.kind === "decline" ? "Call declined" : "Call ended");
+        releaseVoiceCall();
+      }
+    });
+    return () => unsubscribeChannel(channel);
+  }, [user?.id, voiceCall?.callId, contacts.length]);
   const send = async (e) => {
     e.preventDefault();
     if (c?.blocked) return setToast("This member is blocked");
@@ -3262,6 +3431,7 @@ function Home({ db, save, user, setToast, setPage }) {
       content,
       cloudMessage: Boolean(c?.remoteUserId),
       deliveryStatus: c?.remoteUserId ? "sending" : "sent",
+      createdAt: new Date().toISOString(),
       time: new Date().toLocaleTimeString([], {
         hour: "2-digit",
         minute: "2-digit",
@@ -3291,7 +3461,7 @@ function Home({ db, save, user, setToast, setPage }) {
           ...d,
           messages: d.messages.map((item) =>
             item.id === message.id
-              ? { ...item, deliveryStatus: "sent" }
+              ? { ...item, deliveryStatus: "delivered" }
               : item,
           ),
         }));
@@ -3327,6 +3497,7 @@ function Home({ db, save, user, setToast, setPage }) {
       transaction,
       cloudMessage: Boolean(c.remoteUserId),
       deliveryStatus: c.remoteUserId ? "sending" : "sent",
+      createdAt: new Date().toISOString(),
     };
     save((d) => ({
       ...d,
@@ -3352,7 +3523,7 @@ function Home({ db, save, user, setToast, setPage }) {
           ...d,
           messages: d.messages.map((item) =>
             item.id === message.id
-              ? { ...item, deliveryStatus: "sent" }
+              ? { ...item, deliveryStatus: "delivered" }
               : item,
           ),
         }));
@@ -3467,6 +3638,7 @@ function Home({ db, save, user, setToast, setPage }) {
             durationMs,
             cloudMessage: Boolean(c.remoteUserId),
             deliveryStatus: c.remoteUserId ? "sending" : "sent",
+            createdAt: new Date().toISOString(),
             time: new Date().toLocaleTimeString([], {
               hour: "2-digit",
               minute: "2-digit",
@@ -3478,7 +3650,7 @@ function Home({ db, save, user, setToast, setPage }) {
                 ...message,
                 voiceUrl: undefined,
               });
-              message.deliveryStatus = "sent";
+              message.deliveryStatus = "delivered";
             } catch {
               queueOutgoingMessage(user.id, c.remoteUserId, message);
               message.deliveryStatus = "queued";
@@ -3558,6 +3730,9 @@ function Home({ db, save, user, setToast, setPage }) {
               (x.name + x.phone).toLowerCase().includes(search.toLowerCase()),
             )
             .map((x) => (
+              (() => {
+                const lastMessage = [...db.messages].reverse().find((message) => message.owner === user.id && message.contact === x.id);
+                return (
               <button
                 className={x.id === selected ? "selected" : ""}
                 onClick={() => setSelected(x.id)}
@@ -3572,11 +3747,15 @@ function Home({ db, save, user, setToast, setPage }) {
                 <div>
                   <b>{x.name}</b>
                   <small>
-                    {x.phone} · {x.country}
+                    {lastMessage
+                      ? `${lastMessage.sender === "me" ? "You: " : ""}${lastMessage.transaction ? `Transaction ${lastMessage.transaction.reference}` : lastMessage.voicePath || lastMessage.voiceUrl ? "Voice message" : lastMessage.content}`
+                      : `${x.phone || x.username || "DataChat contact"} · ${x.country}`}
                   </small>
                 </div>
                 <span className="online" />
               </button>
+                );
+              })()
             ))}
           {!contacts.length && (
             <Empty
@@ -3607,10 +3786,10 @@ function Home({ db, save, user, setToast, setPage }) {
               <ContactQr c={c} setToast={setToast} />
               <button
                 className="icon-btn"
-                title={c.phone ? `Call ${c.name}` : "No phone number available"}
+                title={`DataChat voice call ${c.name}`}
                 aria-label={`Voice call ${c.name}`}
-                disabled={!c.phone}
-                onClick={() => openContactDialer(c.phone).catch((error) => setToast(error.message))}
+                disabled={!c.remoteUserId || Boolean(voiceCall)}
+                onClick={() => startVoiceCall(c)}
               >
                 <Icon name="Phone" />
               </button>
@@ -3624,10 +3803,12 @@ function Home({ db, save, user, setToast, setPage }) {
               </button>
             </div>
             <div className="messages" ref={messagesRef}>
-              {msgs.map((m) =>
-                m.transaction ? (
+              {msgs.map((m, index) => {
+                const showDate = index === 0 || messageDay(msgs[index - 1]?.createdAt) !== messageDay(m.createdAt);
+                return <React.Fragment key={m.id}>
+                  {showDate && <div className="message-date"><span>{messageDay(m.createdAt)}</span></div>}
+                {m.transaction ? (
                   <TransactionChatCard
-                    key={m.id}
                     message={m}
                     db={db}
                     save={save}
@@ -3636,7 +3817,7 @@ function Home({ db, save, user, setToast, setPage }) {
                     onActions={() => setMessageAction(m)}
                   />
                 ) : (
-                  <div key={m.id} className={"bubble " + m.sender}>
+                  <div className={"bubble " + m.sender}>
                     <button
                       type="button"
                       className="message-menu-button"
@@ -3655,13 +3836,12 @@ function Home({ db, save, user, setToast, setPage }) {
                     <small>
                       {m.edited && !m.deleted ? "edited · " : ""}
                       {m.time}
-                      {m.sender === "me" && m.deliveryStatus
-                        ? ` · ${m.deliveryStatus}`
-                        : ""}
+                      {m.sender === "me" && <MessageReceipt status={m.deliveryStatus} />}
                     </small>
                   </div>
-                ),
-              )}
+                )}
+                </React.Fragment>;
+              })}
             </div>
             <form className="composer" onSubmit={send}>
               {attachments && (
@@ -3822,6 +4002,25 @@ function Home({ db, save, user, setToast, setPage }) {
             )}
           </div>
         </Modal>
+      )}
+      {voiceCall && createPortal(
+        <div className="call-overlay" role="dialog" aria-modal="true" aria-label="DataChat voice call">
+          <div className="call-card">
+            <UserAvatar person={voiceCall.contact} />
+            <span className="eyebrow">DATACHAT VOICE</span>
+            <h2>{voiceCall.contact.name}</h2>
+            <p>{voiceCall.status === "ringing" ? "Incoming encrypted voice call" : voiceCall.status === "connected" ? "Connected" : voiceCall.status === "connecting" ? "Connecting…" : "Calling…"}</p>
+            <audio ref={remoteAudioRef} autoPlay playsInline />
+            <div className="call-actions">
+              {voiceCall.direction === "incoming" && voiceCall.status === "ringing" && (
+                <button className="call-accept" onClick={acceptVoiceCall} aria-label="Accept voice call"><Icon name="Phone" /></button>
+              )}
+              <button className="call-end" onClick={() => endVoiceCall(voiceCall.status === "ringing")} aria-label={voiceCall.status === "ringing" ? "Decline voice call" : "End voice call"}><Icon name="PhoneOff" /></button>
+            </div>
+            <small>Uses low-bandwidth WebRTC audio. Both users must have DataChat open and internet access.</small>
+          </div>
+        </div>,
+        document.body,
       )}
       {add && (
         <ContactModal
@@ -4183,10 +4382,11 @@ function ContactModal({ user, save, close, setToast }) {
     )
       throw new Error("The contact QR is incomplete.");
     if (cloudConfigured) {
-      await addContactByQr(
+      const connectedProfile = await addContactByQr(
         profile.id,
         contactCode || profile.contact_code,
       );
+      profile = connectedProfile || profile;
     }
     save((d) => {
       if (d.contacts.some((contact) => contact.remoteUserId === profile.id))
@@ -4223,10 +4423,13 @@ function ContactModal({ user, save, close, setToast }) {
       throw new Error("This is not a DataChat user contact QR code.");
     if (!payload.contactCode)
       throw new Error("This contact QR is missing its security code.");
-    const profile = await findPublicProfile({
-      userId: payload.userId,
-      contactCode: payload.contactCode,
-    });
+    const profile = {
+      id: payload.userId,
+      contact_code: payload.contactCode,
+      display_name: payload.name || "DataChat member",
+      phone: payload.phone || "",
+      country: payload.country || "Global",
+    };
     await addRemoteProfile(profile, payload.contactCode, payload.phone);
   };
   const scanCamera = async () => {
@@ -4917,7 +5120,10 @@ function TransactionChatCard({ message, db, save, user, setToast, onActions }) {
           <img className="transaction-brand" src="/assets/datachat-play-icon.png" alt="DataChat" />
           <b>{data.reference}</b>
         </span>
-        <small>{message.time}</small>
+        <small className="transaction-time">
+          {message.time}
+          {message.sender === "me" && <MessageReceipt status={message.deliveryStatus} />}
+        </small>
         <button
           type="button"
           className="transaction-toggle"
@@ -6734,7 +6940,7 @@ function Settings({
             </div>
             <div>
               <dt>Version</dt>
-              <dd>1.3.4</dd>
+              <dd>1.3.5</dd>
             </div>
             <div>
               <dt>Plan</dt>
