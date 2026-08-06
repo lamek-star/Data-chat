@@ -225,7 +225,7 @@ async function loadCloudDb(authUser) {
         contactCode: profile.contact_code,
         name: profile.display_name,
         username: profile.username,
-        phone: "",
+        phone: profile.phone || "",
         country: profile.country || "Global",
         profilePhoto: profile.avatar_url || null,
         color: ["#d7a62b", "#4c8ed9", "#8f69d8", "#35a57a"][index % 4],
@@ -632,6 +632,15 @@ async function openNativeAppSettings() {
   }
   return false;
 }
+async function openContactDialer(phone) {
+  const number = String(phone || "").trim();
+  if (!number) throw new Error("This contact has no phone number. Ask them to share their updated QR code.");
+  if (isNativeApp() && Capacitor.getPlatform() === "android") {
+    await DataChatNativeSettings.openDialer({ number });
+    return;
+  }
+  window.location.assign(`tel:${number.replace(/[^+\d]/g, "")}`);
+}
 async function notifyIncomingMessage(senderName, message) {
   const title = `New message from ${senderName || "DataChat contact"}`;
   const body = message?.transaction
@@ -662,6 +671,8 @@ async function notifyIncomingMessage(senderName, message) {
           title,
           body,
           channelId: "datachat-messages-v2",
+          smallIcon: "ic_stat_datachat",
+          largeIcon: "datachat_notification_logo",
           extra: { page: "home" },
         },
       ],
@@ -1040,7 +1051,7 @@ function App() {
               contactCode: profile.contact_code,
               name: profile.display_name,
               username: profile.username,
-              phone: "",
+              phone: profile.phone || "",
               country: profile.country || "Global",
               profilePhoto: profile.avatar_url || null,
               color: ["#d7a62b", "#4c8ed9", "#8f69d8", "#35a57a"][
@@ -2818,6 +2829,7 @@ function Portal({ db, save, user, setToast, setPage }) {
 function CommunityManager({ db, save, user, setToast }) {
   const [createOpen, setCreateOpen] = useState(false);
   const [manage, setManage] = useState(null);
+  const [refreshingCommunities, setRefreshingCommunities] = useState(false);
   const communities = db.communities || [];
   const visibleCommunities = communities.filter((x) => !x.isAdminRoot);
   const eligibleParents = visibleCommunities.filter(
@@ -2835,6 +2847,19 @@ function CommunityManager({ db, save, user, setToast }) {
       current = visibleCommunities.find((item) => item.id === current.parentId);
     }
     return path;
+  };
+  const refreshCommunityList = async ({ quiet = false } = {}) => {
+    if (!cloudConfigured || refreshingCommunities) return;
+    setRefreshingCommunities(true);
+    try {
+      const latest = await loadCloudCommunities();
+      save((state) => ({ ...state, communities: latest }));
+      if (!quiet) setToast("Communities updated");
+    } catch (error) {
+      if (!quiet) setToast(`Community refresh failed: ${error.message}`);
+    } finally {
+      setRefreshingCommunities(false);
+    }
   };
   const createGroup = async (e) => {
     e.preventDefault();
@@ -2879,6 +2904,7 @@ function CommunityManager({ db, save, user, setToast }) {
           : `${group.name} community created`,
       );
       setCreateOpen(false);
+      refreshCommunityList({ quiet: true });
     } catch (error) {
       setToast(`Community creation failed: ${error.message}`);
     }
@@ -2895,6 +2921,7 @@ function CommunityManager({ db, save, user, setToast }) {
       ),
     }));
     setToast(`Join request sent to the owner of ${group.name}`);
+    refreshCommunityList({ quiet: true });
     } catch (error) {
       setToast(`Join request failed: ${error.message}`);
     }
@@ -2909,6 +2936,7 @@ function CommunityManager({ db, save, user, setToast }) {
       joinRequests: (x.joinRequests || []).map((request) => request.userId === requesterId ? { ...request, status: approved ? "approved" : "declined", decidedAt: new Date().toISOString() } : request),
     })) }));
     setToast(approved ? "Join request approved" : "Join request declined");
+    refreshCommunityList({ quiet: true });
     } catch (error) {
       setToast(`Approval failed: ${error.message}`);
     }
@@ -2943,17 +2971,23 @@ function CommunityManager({ db, save, user, setToast }) {
             community where you are already an approved member.
           </p>
         </div>
-        <button
-          className="primary"
-          onClick={() => setCreateOpen(true)}
-          disabled={
-            user.plan !== "Pro" ||
-            (cloudConfigured && !user.emailVerified)
-          }
-        >
-          <Icon name="UsersRound" />
-          Create community
-        </button>
+        <div className="community-title-actions">
+          {cloudConfigured && <button className="secondary" disabled={refreshingCommunities} onClick={() => refreshCommunityList()}>
+            <Icon name="RefreshCw" />
+            {refreshingCommunities ? "Updating…" : "Refresh"}
+          </button>}
+          <button
+            className="primary"
+            onClick={() => setCreateOpen(true)}
+            disabled={
+              user.plan !== "Pro" ||
+              (cloudConfigured && !user.emailVerified)
+            }
+          >
+            <Icon name="UsersRound" />
+            Create community
+          </button>
+        </div>
         {user.plan !== "Pro" && (
           <small>Community creation is available to verified Pro members.</small>
         )}
@@ -3038,6 +3072,13 @@ function CommunityManager({ db, save, user, setToast }) {
           );
         })}
       </div>
+      {!visibleCommunities.length && (
+        <Empty
+          icon="Network"
+          title="No member communities yet"
+          text="Verified Pro members can create the first independent community. Administrator root groups stay private and are not shown here."
+        />
+      )}
       {createOpen && (
         <Modal
           title="Create a community group"
@@ -3569,11 +3610,7 @@ function Home({ db, save, user, setToast, setPage }) {
                 title={c.phone ? `Call ${c.name}` : "No phone number available"}
                 aria-label={`Voice call ${c.name}`}
                 disabled={!c.phone}
-                onClick={() => {
-                  if (!c.phone) return;
-                  if (window.confirm(`Start a voice call with ${c.name}?`))
-                    window.location.href = `tel:${String(c.phone).replace(/[^+\d]/g, "")}`;
-                }}
+                onClick={() => openContactDialer(c.phone).catch((error) => setToast(error.message))}
               >
                 <Icon name="Phone" />
               </button>
@@ -4013,6 +4050,7 @@ function MyContactQr({ user, setToast }) {
       String(user.id).replaceAll("-", "").slice(0, 12).toUpperCase(),
     name: user.name,
     country: user.country || "Global",
+    phone: user.phone || "",
   });
   useEffect(() => {
     if (open)
@@ -4136,7 +4174,7 @@ function ContactModal({ user, save, close, setToast }) {
   const [scanError, setScanError] = useState(""),
     [busy, setBusy] = useState(false),
     fileRef = useRef(null);
-  const addRemoteProfile = async (profile, contactCode) => {
+  const addRemoteProfile = async (profile, contactCode, sharedPhone = "") => {
     if (!profile) throw new Error("No DataChat account matches that code.");
     if (profile.id === user.id) throw new Error("You cannot add your own account.");
     if (
@@ -4163,7 +4201,7 @@ function ContactModal({ user, save, close, setToast }) {
             contactCode: profile.contact_code,
             owner: user.id,
             name: profile.display_name,
-            phone: "",
+            phone: profile.phone || sharedPhone || "",
             country: profile.country || "Global",
             color: ["#d7a62b", "#4c8ed9", "#8f69d8", "#35a57a"][d.contacts.length % 4],
             isOnline: true,
@@ -4175,7 +4213,12 @@ function ContactModal({ user, save, close, setToast }) {
     close();
   };
   const acceptScannedContact = async (value) => {
-    const payload = JSON.parse(value);
+    let payload;
+    try {
+      payload = JSON.parse(String(value || "").trim());
+    } catch {
+      throw new Error("The QR is readable, but it is not a DataChat personal contact QR. Ask the user to open My Contact QR.");
+    }
     if (payload.type !== "datachat-user-contact" || !payload.userId)
       throw new Error("This is not a DataChat user contact QR code.");
     if (!payload.contactCode)
@@ -4184,7 +4227,7 @@ function ContactModal({ user, save, close, setToast }) {
       userId: payload.userId,
       contactCode: payload.contactCode,
     });
-    await addRemoteProfile(profile, payload.contactCode);
+    await addRemoteProfile(profile, payload.contactCode, payload.phone);
   };
   const scanCamera = async () => {
     setBusy(true);
@@ -4230,6 +4273,10 @@ function ContactModal({ user, save, close, setToast }) {
         setScanError(error.message);
         setBusy(false);
       }
+      return;
+    }
+    if (cloudConfigured) {
+      setScanError("Scan a personal DataChat QR or enter the 12-character contact code.");
       return;
     }
     save((d) => {
@@ -4309,22 +4356,24 @@ function ContactModal({ user, save, close, setToast }) {
             {scanError && <div className="error" role="alert">{scanError}</div>}
           </>
         )}
-        <label>
-          Full name
-          <input name="name" required={!cloudConfigured} />
-        </label>
-        <label>
-          Phone number
-          <input name="phone" required={!cloudConfigured} type="tel" />
-        </label>
-        <label>
-          Country
-          <select name="country">
-            {countries.map((x) => (
-              <option key={x}>{x}</option>
-            ))}
-          </select>
-        </label>
+        {!cloudConfigured && <>
+          <label>
+            Full name
+            <input name="name" required />
+          </label>
+          <label>
+            Phone number
+            <input name="phone" required type="tel" />
+          </label>
+          <label>
+            Country
+            <select name="country">
+              {countries.map((x) => (
+                <option key={x}>{x}</option>
+              ))}
+            </select>
+          </label>
+        </>}
         <button className="primary" disabled={busy}>{cloudConfigured ? "Add by contact code" : "Add contact"}</button>
       </form>
       {contact.remoteUserId && (
@@ -4865,7 +4914,7 @@ function TransactionChatCard({ message, db, save, user, setToast, onActions }) {
     >
       <div className="transaction-message-head">
         <span>
-          <Icon name="ReceiptText" />
+          <img className="transaction-brand" src="/assets/datachat-play-icon.png" alt="DataChat" />
           <b>{data.reference}</b>
         </span>
         <small>{message.time}</small>
@@ -6685,7 +6734,7 @@ function Settings({
             </div>
             <div>
               <dt>Version</dt>
-              <dd>1.3.3</dd>
+              <dd>1.3.4</dd>
             </div>
             <div>
               <dt>Plan</dt>

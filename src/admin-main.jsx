@@ -237,7 +237,7 @@ function AdminApp() {
       <main className="admin-login">
         <form className="auth-card" onSubmit={login}>
           <span className="admin-mark">
-            <ShieldCheck />
+            <img src="/assets/datachat-play-icon.png" alt="DataChat" />
           </span>
           <p className="eyebrow">SEPARATE SECURE PORTAL</p>
           <h1>DataChat administration</h1>

@@ -478,6 +478,12 @@ header p,
 .transaction-message-head svg {
   color: var(--gold2);
 }
+.transaction-brand {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  object-fit: contain;
+}
 .transaction-message-head small {
   color: var(--muted);
 }
@@ -627,6 +633,7 @@ header p,
   color: var(--muted);
   max-width: 650px;
 }
+.community-title-actions { display: flex; align-items: center; gap: 8px; }
 .community-tree {
   display: grid;
   gap: 12px;
@@ -3498,6 +3505,7 @@ dd {
 .admin-top > div > div {
   display: grid;
 }
+.admin-mark img { width: 100%; height: 100%; object-fit: contain; border-radius: 9px; }
 .admin-top small {
   color: var(--muted);
 }

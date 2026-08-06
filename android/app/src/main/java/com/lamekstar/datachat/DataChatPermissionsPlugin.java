@@ -20,4 +20,21 @@ public class DataChatPermissionsPlugin extends Plugin {
         getContext().startActivity(intent);
         call.resolve();
     }
+
+    @PluginMethod
+    public void openDialer(PluginCall call) {
+        String number = call.getString("number", "").trim();
+        if (number.isEmpty()) {
+            call.reject("This contact has no phone number.");
+            return;
+        }
+        Intent intent = new Intent(Intent.ACTION_DIAL, Uri.parse("tel:" + Uri.encode(number)));
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        if (intent.resolveActivity(getContext().getPackageManager()) == null) {
+            call.reject("No calling application is available on this device.");
+            return;
+        }
+        getContext().startActivity(intent);
+        call.resolve();
+    }
 }

@@ -491,7 +491,7 @@ export async function loadPublicProfiles(userIds) {
   const client = requireSupabase();
   const { data, error } = await client
     .from("profiles")
-    .select("id, display_name, username, contact_code, country, avatar_url, plan, status, email_verified,visible_in_community")
+    .select("id, display_name, username, contact_code, country, avatar_url, phone, plan, status, email_verified,visible_in_community")
     .in("id", [...new Set(userIds)]);
   if (error) throw error;
   return data || [];
