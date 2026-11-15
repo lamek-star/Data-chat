@@ -30,6 +30,8 @@ import {
   subscribeToDirectMessages,
   unsubscribeChannel,
   uploadProfilePhoto,
+  loadEntitlement,
+  getAccessToken,
 } from "./cloud/supabaseClient";
 import * as I from "lucide-react";
 import QRCode from "qrcode";
@@ -60,7 +62,6 @@ const seed = {
       id: "demo",
       name: "Abel Tesfaye",
       email: "demo@datachat.app",
-      password: "demo123",
       plan: "Pro",
       role: "user",
       status: "active",
@@ -69,7 +70,6 @@ const seed = {
       id: "free-demo",
       name: "Free Test User",
       email: "free@datachat.app",
-      password: "free123",
       plan: "Free",
       role: "user",
       status: "active",
@@ -78,7 +78,6 @@ const seed = {
       id: "admin",
       name: "DataChat Administrator",
       email: "admin@datachat.app",
-      password: "admin123",
       plan: "Admin",
       role: "admin",
       status: "active",
@@ -297,19 +296,26 @@ const buildCloudDb = (rows, userId, profile = {}) => {
 };
 
 async function loadCloudDb(authUser) {
-  const [rows, publicProfile, remoteMessages] = await Promise.all([
+  const [rows, publicProfile, remoteMessages, entitlement] = await Promise.all([
     loadAppData(authUser.id),
     upsertPublicProfile(authUser),
     loadDirectMessages(authUser.id),
+    loadEntitlement(authUser.id),
   ]);
+  if (entitlement.status === "suspended") {
+    await cloudSignOut().catch(() => {});
+    throw new Error("This account is suspended. Contact support.");
+  }
+  // Plan and role come only from datachat_entitlements. user_metadata is
+  // editable by the user and must never decide access.
   const cloudDb = buildCloudDb(rows, authUser.id, {
     name: authUser.user_metadata?.name || authUser.email?.split("@")[0],
     username: authUser.user_metadata?.username || publicProfile.username,
     email: authUser.email,
-    plan: authUser.user_metadata?.plan || "Free",
-    role: authUser.user_metadata?.role || "user",
-    status: authUser.user_metadata?.status || "active",
-    createdAt: authUser.user_metadata?.createdAt,
+    plan: entitlement.plan,
+    role: entitlement.role,
+    status: entitlement.status,
+    createdAt: authUser.user_metadata?.createdAt || authUser.created_at,
   });
   cloudDb.users[0] = {
     ...cloudDb.users[0],
@@ -623,6 +629,13 @@ function App() {
         const result = await response.json();
         if (!response.ok) throw new Error(result.error || "Could not verify payment.");
         if (result.userId !== user.id || result.paymentStatus !== "paid") throw new Error("Stripe has not confirmed this subscription payment.");
+        // The server records Pro in datachat_entitlements; read it back
+        // instead of trusting this redirect.
+        if (cloudConfigured) {
+          const entitlement = await loadEntitlement(user.id);
+          if (entitlement.plan !== "Pro")
+            throw new Error("Payment received. Pro will appear within a minute; reopen the app if it does not.");
+        }
         const upgraded = { ...user, plan: "Pro", stripeCheckoutSession: sessionId };
         setDb((d) => ({ ...d, users: d.users.map((x) => x.id === user.id ? { ...x, plan: "Pro", stripeCheckoutSession: sessionId } : x) }));
         setUser(upgraded);
@@ -712,129 +725,6 @@ function App() {
           }}
         />
       )}
-    </div>
-  );
-}
-function LegacyAuth({ db, save, login }) {
-  const [mode, setMode] = useState("login"),
-    [err, setErr] = useState("");
-  const submit = (e) => {
-    e.preventDefault();
-    const f = new FormData(e.currentTarget),
-      email = f.get("email").trim().toLowerCase(),
-      password = f.get("password");
-    if (mode === "login") {
-      const u = db.users.find(
-        (x) => x.email === email && x.password === password,
-      );
-      if (!u) return setErr("Email or password is incorrect.");
-      if (u.role === "admin")
-        return setErr(
-          "Administrator accounts must use the separate admin portal.",
-        );
-      login(u);
-    } else {
-      if (db.users.some((x) => x.email === email))
-        return setErr("An account already exists for this email.");
-      const u = {
-        id: uid("user"),
-        name: f.get("name"),
-        email,
-        password,
-        plan: "Free",
-      };
-      save((d) => ({ ...d, users: [...d.users, u] }));
-      login(u);
-    }
-  };
-  return (
-    <div className="auth">
-      <section className="auth-brand">
-        <div className="logo big">
-          <Icon name="MessagesSquare" size={30} />
-        </div>
-        <p className="eyebrow">SECURE FINANCIAL OPERATIONS</p>
-        <h1>
-          Money records.
-          <br />
-          <span>Clear conversations.</span>
-        </h1>
-        <p>
-          Manage international transfers, approvals, contacts and reporting from
-          one private workspace.
-        </p>
-        <div className="trust">
-          <span>
-            <Icon name="ShieldCheck" />
-            Private by design
-          </span>
-          <span>
-            <Icon name="Zap" />
-            Real-time workflow
-          </span>
-        </div>
-      </section>
-      <form className="auth-card" onSubmit={submit}>
-        <div className="mobile-brand">
-          <div className="logo">
-            <Icon name="MessagesSquare" />
-          </div>
-          DataChat
-        </div>
-        <h2>{mode === "login" ? "Welcome back" : "Create your workspace"}</h2>
-        <p>
-          {mode === "login"
-            ? "Sign in to continue to DataChat."
-            : "Your data is isolated from every other user."}
-        </p>
-        {mode === "register" && (
-          <label>
-            Full name
-            <input name="name" required placeholder="Your full name" />
-          </label>
-        )}
-        <label>
-          Email address
-          <input
-            name="email"
-            type="email"
-            required
-            defaultValue={mode === "login" ? "demo@datachat.app" : ""}
-            placeholder="you@example.com"
-          />
-        </label>
-        <label>
-          Password
-          <input
-            name="password"
-            type="password"
-            required
-            minLength="6"
-            defaultValue={mode === "login" ? "demo123" : ""}
-            placeholder="At least 6 characters"
-          />
-        </label>
-        {err && <div className="error">{err}</div>}
-        <button className="primary" type="submit">
-          {mode === "login" ? "Sign in" : "Create account"}
-          <Icon name="ArrowRight" />
-        </button>
-        <button
-          type="button"
-          className="link"
-          onClick={() => {
-            setMode(mode === "login" ? "register" : "login");
-            setErr("");
-          }}
-        >
-          {mode === "login"
-            ? "New to DataChat? Create account"
-            : "Already registered? Sign in"}
-        </button>
-        {mode === "login" && (
-          <div className="demo">Demo: demo@datachat.app / demo123</div>
-        )}
-      </form>
     </div>
   );
 }
@@ -958,9 +848,7 @@ function Auth({ db, save, login }) {
           username: f.get("username").trim().toLowerCase(),
           phone: f.get("phone").trim(),
           email,
-          plan: "Free",
-          role: "user",
-          status: "active",
+          // Plan/role/status live in datachat_entitlements, not metadata.
           createdAt: new Date().toISOString(),
         };
         const result = await cloudSignUp(email, password, metadata);
@@ -1182,13 +1070,6 @@ function Auth({ db, save, login }) {
             >
               Existing OTP-only account? Set username and password
             </button>
-          )}
-          {mode === "login" && !cloudConfigured && (
-            <div className="demo">
-              Pro demo: demo@datachat.app / demo123
-              <br />
-              Free demo: free@datachat.app / free123
-            </div>
           )}
           {mode === "register" && db.adminConfig?.paymentUrl && false && (
             <a
@@ -5027,12 +4908,23 @@ function Settings({ db, save, user, logout, setToast, onPlanChanged }) {
     setBillingBusy(true);
     setBillingError("");
     try {
+      // The server takes the account from this token, not from the request
+      // body, so nobody can start a checkout for another account.
+      const token = cloudConfigured ? await getAccessToken() : null;
       const response = await fetch(apiUrl("/api/stripe/create-checkout-session"), {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId: user.id, email: user.email }),
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: "{}",
       });
       const result = await response.json();
+      if (response.status === 401) {
+        setBillingError(result.error || "Sign in again before upgrading.");
+        setBillingBusy(false);
+        return;
+      }
       if (!response.ok) throw new Error(result.error || "Checkout could not start.");
       window.location.assign(result.url);
     } catch (error) {
@@ -5061,6 +4953,12 @@ function Settings({ db, save, user, logout, setToast, onPlanChanged }) {
           );
       if (!match)
         throw new Error("Code not found, expired, or already used.");
+      if (cloudConfigured) {
+        // The redeem function records Pro server-side; confirm it stuck.
+        const entitlement = await loadEntitlement(user.id);
+        if (entitlement.plan !== "Pro")
+          throw new Error("The code was accepted but Pro could not be confirmed. Contact the administrator.");
+      }
       const now = new Date().toISOString();
       save((d) => ({
         ...d,

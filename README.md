@@ -22,13 +22,36 @@ For local webhook testing, install the Stripe CLI and forward events:
 stripe listen --forward-to localhost:4242/api/stripe/webhook
 ```
 
-Copy the reported `whsec_...` value into `STRIPE_WEBHOOK_SECRET`. Card checkout creates a Stripe-hosted subscription session; the app verifies the returned session with the server before granting Pro access. Cash customers can instead redeem a one-time Pro code generated in the administrator portal.
+Copy the reported `whsec_...` value into `STRIPE_WEBHOOK_SECRET`. Card checkout creates a Stripe-hosted session for the signed-in account. Pro is granted only by the server: the Stripe webhook (and the post-checkout status check) records it in the `datachat_entitlements` table with the Supabase service-role key. Cash customers can instead redeem a one-time Pro code generated in the administrator portal; the database records Pro when the code is redeemed.
 
-Demo: `demo@datachat.app` / `demo123`
+The API server (`shared/api.js`, run locally by `server/index.js` and in production by the Cloudflare Worker) needs these settings in `.env` locally, or as Worker variables/secrets:
 
-Local administrator: `admin@datachat.app` / `admin123`
+| Name | Where | Purpose |
+|---|---|---|
+| `SUPABASE_URL`, `SUPABASE_ANON_KEY` | `.env` / `wrangler.toml` vars (public) | Verify sign-ins |
+| `SUPABASE_SERVICE_ROLE_KEY` | `.env` / `wrangler secret put` (**secret**) | Grant Pro, resolve usernames at sign-in |
+| `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | `.env` / `wrangler secret put` (**secret**) | Checkout and webhooks |
+| `STRIPE_PRO_PRICE_ID`, `APP_URL` | `.env` / `wrangler.toml` vars | Checkout price and redirect URL |
 
-The administrator console manages account metadata, plans, status, external links, and one-time access codes. It intentionally has no interface for users' messages, contacts, financial records, transaction keys, or encrypted backup contents. Replace the local demonstration credentials and browser storage with server-side authentication, role enforcement, audit logs, and a production database before deployment.
+Never give the service-role key or Stripe secret a `VITE_` prefix; anything prefixed `VITE_` is shipped to every browser.
+
+## Security setup (required)
+
+1. In the Supabase SQL Editor, run in order: `supabase/schema.sql`, `supabase/realtime_chat.sql`, `supabase/production_upgrade.sql`, `supabase/auth_codes_upgrade.sql`, then `supabase/security_hardening.sql`.
+2. Make your own account an administrator (replace the email):
+
+   ```sql
+   insert into public.datachat_entitlements (user_id, role, source)
+   select id, 'admin', 'bootstrap' from auth.users where email = 'you@example.com'
+   on conflict (user_id) do update set role = 'admin', updated_at = now();
+   ```
+
+3. Set the Worker secrets: `wrangler secret put SUPABASE_SERVICE_ROLE_KEY`, `wrangler secret put STRIPE_SECRET_KEY`, `wrangler secret put STRIPE_WEBHOOK_SECRET`.
+4. In the Stripe dashboard, point a webhook for `checkout.session.completed` and `checkout.session.async_payment_succeeded` at `https://<your domain>/api/stripe/webhook`.
+
+Plan, role and account status are read only from `datachat_entitlements`, which users can read but never write. Supabase `user_metadata` is editable by every user and is never trusted for access.
+
+The administrator portal (`/admin.html`) signs in with a normal DataChat account that has the `admin` role; the database re-checks that role on every administrator call. It manages one-time access codes and local metadata, and intentionally has no interface for users' messages, contacts, financial records, transaction keys, or encrypted backup contents.
 
 ## Account access and backups
 
