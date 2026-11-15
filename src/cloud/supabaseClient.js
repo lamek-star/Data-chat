@@ -31,16 +31,52 @@ export async function signIn(email, password) {
   return data;
 }
 
+const API_BASE = (
+  import.meta.env.VITE_API_BASE_URL || "https://datachat.harmongt.uk"
+).replace(/\/$/, "");
+
+// Usernames are resolved by the server, which never returns the email
+// address. An email address typed into the username field signs in directly.
 export async function signInWithUsername(username, password) {
   const client = requireSupabase();
   const normalized = String(username || "").trim().toLowerCase();
-  const { data: email, error: lookupError } = await client.rpc(
-    "datachat_login_email",
-    { requested_username: normalized },
-  );
-  if (lookupError) throw lookupError;
-  if (!email) throw new Error("Username or password is incorrect.");
-  return signIn(email, password);
+  if (normalized.includes("@")) return signIn(normalized, password);
+  const response = await fetch(`${API_BASE}/api/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: normalized, password }),
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok)
+    throw new Error(result.error || "Username or password is incorrect.");
+  const { data, error } = await client.auth.setSession({
+    access_token: result.access_token,
+    refresh_token: result.refresh_token,
+  });
+  if (error) throw error;
+  return data;
+}
+
+export async function getAccessToken() {
+  const session = await getSession();
+  return session?.access_token || null;
+}
+
+// Plan, role and status come from datachat_entitlements, which users can
+// read but not write. A missing row means a Free, active, normal account.
+export async function loadEntitlement(userId) {
+  const client = requireSupabase();
+  const { data, error } = await client
+    .from("datachat_entitlements")
+    .select("plan, role, status")
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (error) throw error;
+  return {
+    plan: data?.plan || "Free",
+    role: data?.role || "user",
+    status: data?.status || "active",
+  };
 }
 
 export async function signUp(email, password, userMetadata = {}) {
@@ -103,33 +139,27 @@ export async function redeemProAccessCode(code) {
   return data;
 }
 
-export async function configureCloudAdmin(username, password) {
+// Administrator calls. The database checks the signed-in user's admin role
+// (datachat_entitlements.role = 'admin') on every call.
+export async function isCloudAdmin() {
   const client = requireSupabase();
-  const { data, error } = await client.rpc("configure_datachat_admin", {
-    requested_username: username,
-    requested_password: password,
-  });
+  const { data, error } = await client.rpc("is_datachat_admin");
   if (error) throw error;
-  return data;
+  return data === true;
 }
 
-export async function createCloudAccessCode(username, password, code) {
+export async function createCloudAccessCode(code) {
   const client = requireSupabase();
-  const { data, error } = await client.rpc("create_datachat_pro_code", {
-    requested_username: username,
-    requested_password: password,
+  const { data, error } = await client.rpc("admin_create_pro_code", {
     requested_code: code,
   });
   if (error) throw error;
   return data;
 }
 
-export async function listCloudAccessCodes(username, password) {
+export async function listCloudAccessCodes() {
   const client = requireSupabase();
-  const { data, error } = await client.rpc("list_datachat_pro_codes", {
-    requested_username: username,
-    requested_password: password,
-  });
+  const { data, error } = await client.rpc("admin_list_pro_codes");
   if (error) throw error;
   return data || [];
 }
@@ -151,7 +181,8 @@ export async function getSession() {
 export function onAuthStateChange(callback) {
   const supabase = requireSupabase();
   const { data } = supabase.auth.onAuthStateChange((event, session) => {
-    callback(event, session?.session || null);
+    // supabase-js v2 passes the Session itself (it has no .session field).
+    callback(event, session || null);
   });
   return data.subscription;
 }
@@ -210,37 +241,30 @@ export async function createBackupUrl(path, expiresIn = 60) {
   return data?.signedUrl;
 }
 
+const PUBLIC_PROFILE_COLUMNS =
+  "id, display_name, username, contact_code, country, avatar_url";
+
+// The profile row is created by the sign-up trigger; the client may only
+// read it and change display_name, country and avatar_url. Contact codes and
+// usernames cannot be set from the browser, and phone numbers are private.
 export async function upsertPublicProfile(user) {
   const client = requireSupabase();
-  const profile = {
-    id: user.id,
-    display_name:
-      user.user_metadata?.name || user.email?.split("@")[0] || "DataChat member",
-    username:
-      user.user_metadata?.username ||
-      `${user.email?.split("@")[0]?.toLowerCase() || "member"}-${String(user.id)
-        .replaceAll("-", "")
-        .slice(0, 6)}`,
-    contact_code: String(user.id).replaceAll("-", "").slice(0, 12).toUpperCase(),
-    country: user.user_metadata?.country || "Global",
-    phone: user.user_metadata?.phone || "",
-    avatar_url: user.user_metadata?.avatar_url || null,
-    updated_at: new Date().toISOString(),
-  };
   const { data, error } = await client
     .from("profiles")
-    .upsert(profile, { onConflict: "id" })
-    .select()
-    .single();
+    .select(PUBLIC_PROFILE_COLUMNS)
+    .eq("id", user.id)
+    .maybeSingle();
   if (error) throw error;
-  return data;
+  if (!data)
+    throw new Error("Your DataChat profile is missing. Contact the administrator.");
+  return { ...data, phone: user.user_metadata?.phone || "" };
 }
 
 export async function findPublicProfile({ userId, contactCode }) {
   const client = requireSupabase();
   let query = client
     .from("profiles")
-    .select("id, display_name, username, contact_code, country, phone, avatar_url");
+    .select(PUBLIC_PROFILE_COLUMNS);
   query = userId
     ? query.eq("id", userId)
     : query.eq("contact_code", String(contactCode || "").trim().toUpperCase());
@@ -265,7 +289,7 @@ export async function loadPublicProfiles(userIds) {
   const client = requireSupabase();
   const { data, error } = await client
     .from("profiles")
-    .select("id, display_name, username, contact_code, country, phone, avatar_url")
+    .select(PUBLIC_PROFILE_COLUMNS)
     .in("id", [...new Set(userIds)]);
   if (error) throw error;
   return data || [];
