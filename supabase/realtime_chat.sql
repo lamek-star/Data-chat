@@ -55,6 +55,15 @@ create index if not exists direct_messages_sender_time
 create index if not exists direct_messages_recipient_time
   on public.direct_messages (recipient_id, created_at desc);
 
+-- The original sign-up trigger function. Once auth_codes_upgrade.sql has run,
+-- profiles.username is NOT NULL and a newer function exists, so re-running
+-- this file must not put the old one back (it would break every sign-up).
+do $outer$
+begin
+  if exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'profiles' and column_name = 'username') then
+    return;
+  end if;
+  execute $fn$
 create or replace function public.create_datachat_profile()
 returns trigger
 language plpgsql
@@ -73,21 +82,29 @@ begin
     updated_at = now();
   return new;
 end;
-$$;
+$$
+$fn$;
+end $outer$;
 
 drop trigger if exists create_datachat_profile_after_signup on auth.users;
 create trigger create_datachat_profile_after_signup
   after insert or update of raw_user_meta_data on auth.users
   for each row execute function public.create_datachat_profile();
 
-insert into public.profiles (id, display_name, contact_code, country)
-select
-  id,
-  coalesce(raw_user_meta_data ->> 'name', split_part(email, '@', 1), 'DataChat member'),
-  upper(substr(replace(id::text, '-', ''), 1, 12)),
-  coalesce(raw_user_meta_data ->> 'country', 'Global')
-from auth.users
-on conflict (id) do nothing;
+do $outer$
+begin
+  if exists (select 1 from information_schema.columns where table_schema = 'public' and table_name = 'profiles' and column_name = 'username') then
+    return;
+  end if;
+  insert into public.profiles (id, display_name, contact_code, country)
+  select
+    id,
+    coalesce(raw_user_meta_data ->> 'name', split_part(email, '@', 1), 'DataChat member'),
+    upper(substr(replace(id::text, '-', ''), 1, 12)),
+    coalesce(raw_user_meta_data ->> 'country', 'Global')
+  from auth.users
+  on conflict (id) do nothing;
+end $outer$;
 
 do $$
 begin

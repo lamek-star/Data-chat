@@ -263,6 +263,37 @@ grant update (display_name, country, avatar_url, updated_at)
 -- Profiles are created by the create_datachat_profile trigger on sign-up.
 -- Usernames change through auth metadata (same trigger), so they stay unique.
 
+-- Re-assert the final sign-up trigger. realtime_chat.sql defines an older
+-- version without username; re-running it after auth_codes_upgrade.sql would
+-- otherwise break every sign-up (profiles.username is NOT NULL).
+create or replace function public.create_datachat_profile()
+returns trigger
+language plpgsql
+security definer set search_path = public
+as $$
+begin
+  insert into public.profiles (id, display_name, username, contact_code, country, phone)
+  values (
+    new.id,
+    coalesce(new.raw_user_meta_data ->> 'name', split_part(new.email, '@', 1), 'DataChat member'),
+    lower(coalesce(
+      nullif(new.raw_user_meta_data ->> 'username', ''),
+      split_part(new.email, '@', 1) || '-' || substr(replace(new.id::text, '-', ''), 1, 6)
+    )),
+    upper(substr(replace(new.id::text, '-', ''), 1, 12)),
+    coalesce(new.raw_user_meta_data ->> 'country', 'Global'),
+    coalesce(new.raw_user_meta_data ->> 'phone', '')
+  )
+  on conflict (id) do update set
+    display_name = excluded.display_name,
+    username = excluded.username,
+    phone = excluded.phone,
+    updated_at = now();
+  return new;
+end;
+$$;
+revoke all on function public.create_datachat_profile() from public, anon, authenticated;
+
 -- 5. Messages: recipients may only mark as read -----------------------------
 
 revoke update on public.direct_messages from anon, authenticated;
