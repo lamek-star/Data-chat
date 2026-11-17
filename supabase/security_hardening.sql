@@ -104,6 +104,9 @@ begin
   if auth.uid() is null then
     raise exception 'Sign in before redeeming a code';
   end if;
+  if not public.datachat_is_active() then
+    raise exception 'This account is suspended';
+  end if;
 
   select p.display_name, u.email
   into member_name, member_email
@@ -263,7 +266,139 @@ grant update (display_name, country, avatar_url, updated_at)
 -- Profiles are created by the create_datachat_profile trigger on sign-up.
 -- Usernames change through auth metadata (same trigger), so they stay unique.
 
+-- Re-assert the final sign-up trigger. realtime_chat.sql defines an older
+-- version without username; re-running it after auth_codes_upgrade.sql would
+-- otherwise break every sign-up (profiles.username is NOT NULL).
+create or replace function public.create_datachat_profile()
+returns trigger
+language plpgsql
+security definer set search_path = public
+as $$
+begin
+  insert into public.profiles (id, display_name, username, contact_code, country, phone)
+  values (
+    new.id,
+    coalesce(new.raw_user_meta_data ->> 'name', split_part(new.email, '@', 1), 'DataChat member'),
+    lower(coalesce(
+      nullif(new.raw_user_meta_data ->> 'username', ''),
+      split_part(new.email, '@', 1) || '-' || substr(replace(new.id::text, '-', ''), 1, 6)
+    )),
+    upper(substr(replace(new.id::text, '-', ''), 1, 12)),
+    coalesce(new.raw_user_meta_data ->> 'country', 'Global'),
+    coalesce(new.raw_user_meta_data ->> 'phone', '')
+  )
+  on conflict (id) do update set
+    display_name = excluded.display_name,
+    username = excluded.username,
+    phone = excluded.phone,
+    updated_at = now();
+  return new;
+end;
+$$;
+revoke all on function public.create_datachat_profile() from public, anon, authenticated;
+
 -- 5. Messages: recipients may only mark as read -----------------------------
 
 revoke update on public.direct_messages from anon, authenticated;
 grant update (read_at) on public.direct_messages to authenticated;
+
+-- 6. Member management and suspension ---------------------------------------
+
+-- True unless the caller's account is suspended.
+create or replace function public.datachat_is_active()
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select not exists (
+    select 1 from public.datachat_entitlements
+    where user_id = auth.uid() and status = 'suspended'
+  )
+$$;
+revoke all on function public.datachat_is_active() from public;
+grant execute on function public.datachat_is_active() to anon, authenticated;
+
+-- Suspended accounts can still read their own data but cannot write.
+-- Restrictive policies are ANDed with the existing permissive ones.
+drop policy if exists "suspended accounts cannot send" on public.direct_messages;
+create policy "suspended accounts cannot send" on public.direct_messages
+  as restrictive for insert to authenticated with check (public.datachat_is_active());
+
+drop policy if exists "suspended accounts cannot add records" on public.app_data;
+create policy "suspended accounts cannot add records" on public.app_data
+  as restrictive for insert to authenticated with check (public.datachat_is_active());
+drop policy if exists "suspended accounts cannot change records" on public.app_data;
+create policy "suspended accounts cannot change records" on public.app_data
+  as restrictive for update to authenticated using (public.datachat_is_active()) with check (public.datachat_is_active());
+drop policy if exists "suspended accounts cannot delete records" on public.app_data;
+create policy "suspended accounts cannot delete records" on public.app_data
+  as restrictive for delete to authenticated using (public.datachat_is_active());
+
+drop policy if exists "suspended accounts cannot create communities" on public.communities;
+create policy "suspended accounts cannot create communities" on public.communities
+  as restrictive for insert to authenticated with check (public.datachat_is_active());
+drop policy if exists "suspended accounts cannot join communities" on public.community_memberships;
+create policy "suspended accounts cannot join communities" on public.community_memberships
+  as restrictive for insert to authenticated with check (public.datachat_is_active());
+
+create or replace function public.admin_list_members()
+returns setof jsonb
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+begin
+  if not public.is_datachat_admin() then
+    raise exception 'Administrator access required';
+  end if;
+  return query
+  select jsonb_build_object(
+    'id', u.id,
+    'name', coalesce(p.display_name, split_part(u.email, '@', 1)),
+    'username', p.username,
+    'email', u.email,
+    'plan', coalesce(e.plan, 'Free'),
+    'role', coalesce(e.role, 'user'),
+    'status', coalesce(e.status, 'active'),
+    'createdAt', u.created_at
+  )
+  from auth.users u
+  left join public.profiles p on p.id = u.id
+  left join public.datachat_entitlements e on e.user_id = u.id
+  order by u.created_at desc;
+end;
+$$;
+
+create or replace function public.admin_set_user_status(target_user uuid, new_status text)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+begin
+  if not public.is_datachat_admin() then
+    raise exception 'Administrator access required';
+  end if;
+  if new_status not in ('active', 'suspended') then
+    raise exception 'Unknown status';
+  end if;
+  if target_user = auth.uid() then
+    raise exception 'You cannot change your own status';
+  end if;
+  if not exists (select 1 from auth.users where id = target_user) then
+    raise exception 'Unknown user';
+  end if;
+  insert into public.datachat_entitlements (user_id, status, source, reference)
+  values (target_user, new_status, 'admin', auth.uid()::text)
+  on conflict (user_id) do update
+    set status = excluded.status, source = 'admin', reference = auth.uid()::text, updated_at = now();
+  return jsonb_build_object('userId', target_user, 'status', new_status);
+end;
+$$;
+
+revoke all on function public.admin_list_members() from public, anon;
+revoke all on function public.admin_set_user_status(uuid, text) from public, anon;
+grant execute on function public.admin_list_members() to authenticated;
+grant execute on function public.admin_set_user_status(uuid, text) to authenticated;

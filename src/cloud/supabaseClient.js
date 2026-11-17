@@ -8,7 +8,10 @@ const anonKey =
   "sb_publishable_kF_WLO_XatQrqmp_a9Ls2g_IcA6NTgL";
 const appId = import.meta.env.VITE_DATACHAT_APP_ID || "datachat";
 
-export const cloudConfigured = Boolean(url && anonKey);
+// VITE_DATACHAT_OFFLINE=1 runs the app on browser storage only, for local
+// testing and demos without touching the production Supabase project.
+const offline = import.meta.env.VITE_DATACHAT_OFFLINE === "1";
+export const cloudConfigured = !offline && Boolean(url && anonKey);
 export const cloudConfig = { url, anonKey, appId };
 
 const supabase = cloudConfigured ? createClient(url, anonKey) : null;
@@ -32,7 +35,9 @@ export async function signIn(email, password) {
 }
 
 const API_BASE = (
-  import.meta.env.VITE_API_BASE_URL || "https://datachat.harmongt.uk"
+  import.meta.env.VITE_API_BASE_URL ??
+  // In development, call the local API through the Vite /api proxy.
+  (import.meta.env.DEV ? "" : "https://datachat.harmongt.uk")
 ).replace(/\/$/, "");
 
 // Usernames are resolved by the server, which never returns the email
@@ -162,6 +167,33 @@ export async function listCloudAccessCodes() {
   const { data, error } = await client.rpc("admin_list_pro_codes");
   if (error) throw error;
   return data || [];
+}
+
+export async function listCloudMembers() {
+  const client = requireSupabase();
+  const { data, error } = await client.rpc("admin_list_members");
+  if (error) throw error;
+  return data || [];
+}
+
+export async function setCloudMemberPlan(userId, plan) {
+  const client = requireSupabase();
+  const { data, error } = await client.rpc("admin_set_user_plan", {
+    target_user: userId,
+    new_plan: plan,
+  });
+  if (error) throw error;
+  return data;
+}
+
+export async function setCloudMemberStatus(userId, status) {
+  const client = requireSupabase();
+  const { data, error } = await client.rpc("admin_set_user_status", {
+    target_user: userId,
+    new_status: status,
+  });
+  if (error) throw error;
+  return data;
 }
 
 export async function signOut() {

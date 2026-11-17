@@ -34,6 +34,16 @@ import {
   getAccessToken,
 } from "./cloud/supabaseClient";
 import * as I from "lucide-react";
+import {
+  generateSecurityKey,
+  generateTransactionId,
+  isValidSecurityKey,
+  buildClaimCode,
+  claimCodeMatches,
+  recordsToCsv,
+  importRecordsFromCsv,
+} from "./lib/records";
+import { encryptBackup, decryptBackup } from "./lib/backup";
 import QRCode from "qrcode";
 import { Html5Qrcode } from "html5-qrcode";
 import {
@@ -50,7 +60,9 @@ import {
 
 const K = "datachat-v1";
 const API_BASE = (
-  import.meta.env.VITE_API_BASE_URL || "https://datachat.harmongt.uk"
+  import.meta.env.VITE_API_BASE_URL ??
+  // In development, call the local API through the Vite /api proxy.
+  (import.meta.env.DEV ? "" : "https://datachat.harmongt.uk")
 ).replace(/\/$/, "");
 const STRIPE_PAYMENT_LINK =
   import.meta.env.VITE_STRIPE_PAYMENT_LINK ||
@@ -419,7 +431,7 @@ const money = (n, c = "USD") =>
   }).format(+n || 0);
 const today = () => new Date().toISOString().slice(0, 10);
 const uid = (p = "id") =>
-  p + "-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  p + "-" + Date.now().toString(36) + crypto.randomUUID().slice(0, 6);
 const transactionPayload = (record) => ({
   version: 1,
   type: "datachat-transaction-record",
@@ -997,13 +1009,13 @@ function Auth({ db, save, login }) {
               </label>
               <label>
                 Username
-                <input name="username" required autoComplete="username" pattern="[A-Za-z0-9._-]{3,24}" placeholder="Choose a username" />
+                <input name="username" required autoComplete="username" pattern="[A-Za-z0-9._\-]{3,24}" placeholder="Choose a username" />
               </label>
             </>
           )}
           {(mode === "login" || mode === "recover") && !otpStep && <label>
             Username
-            <input name="username" required autoComplete="username" pattern="[A-Za-z0-9._-]{3,24}" placeholder={mode === "recover" ? "Choose a username" : "Your username"} />
+            <input name="username" required autoComplete="username" pattern="[A-Za-z0-9._\-]{3,24}" placeholder={mode === "recover" ? "Choose a username" : "Your username"} />
           </label>}
           {(mode === "register" || mode === "recover") && !otpStep && <label>
             Email address
@@ -3127,114 +3139,33 @@ function Records({ db, save, user, setToast }) {
       save((d) => ({ ...d, records: d.records.filter((r) => r.id !== id) }));
   };
   const exportCsv = () => {
-    const head = [
-      "ID",
-      "Sender",
-      "Sender Phone",
-      "From",
-      "Receiver",
-      "Receiver Phone",
-      "To",
-      "Account",
-      "Amount",
-      "Currency",
-      "Rate",
-      "Category",
-      "Date",
-      "Status",
-      "Tag",
-      "Security Key",
-      "Remark",
-    ];
-    const csv =
-      "\ufeff" +
-      [
-        head,
-        ...all.map((r) => [
-          r.id,
-          r.sender,
-          r.senderPhone,
-          r.from,
-          r.receiver,
-          r.receiverPhone,
-          r.to,
-          r.account,
-          r.amount,
-          r.currency,
-          r.rate,
-          r.category,
-          r.date,
-          r.status,
-          r.tag,
-          r.key,
-          r.remark,
-        ]),
-      ]
-        .map((a) =>
-          a
-            .map((v) => '"' + String(v ?? "").replaceAll('"', '""') + '"')
-            .join(","),
-        )
-        .join("\n");
     const a = document.createElement("a");
-    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+    a.href = URL.createObjectURL(
+      new Blob([recordsToCsv(all)], { type: "text/csv;charset=utf-8" }),
+    );
     a.download = `datachat-${today()}.csv`;
     a.click();
-    URL.revokeObjectURL(a.href);
+    setTimeout(() => URL.revokeObjectURL(a.href), 0);
   };
   const importCsv = (e) => {
     const file = e.target.files[0];
+    e.target.value = "";
     if (!file) return;
-    file.text().then((t) => {
-      const lines = t
-          .replace(/^\ufeff/, "")
-          .split(/\r?\n/)
-          .filter(Boolean),
-        parse = (s) => {
-          const out = [];
-          let cur = "",
-            q = false;
-          for (let i = 0; i < s.length; i++) {
-            if (s[i] === '"' && s[i + 1] === '"') {
-              cur += '"';
-              i++;
-            } else if (s[i] === '"') q = !q;
-            else if (s[i] === "," && !q) {
-              out.push(cur);
-              cur = "";
-            } else cur += s[i];
-          }
-          out.push(cur);
-          return out;
-        };
-      const h = parse(lines[0]).map((x) => x.toLowerCase()),
-        get = (a, n) => a[h.indexOf(n)] || "";
-      const imported = lines.slice(1).map((line) => {
-        const a = parse(line);
-        return {
-          id: get(a, "id") || uid("TXN"),
-          owner: user.id,
-          sender: get(a, "sender"),
-          senderPhone: get(a, "sender phone"),
-          from: get(a, "from"),
-          receiver: get(a, "receiver"),
-          receiverPhone: get(a, "receiver phone"),
-          to: get(a, "to"),
-          account: get(a, "account"),
-          amount: +get(a, "amount") || 0,
-          currency: get(a, "currency") || "USD",
-          rate: +get(a, "rate") || 1,
-          category: get(a, "category") || "Remittance",
-          date: get(a, "date") || today(),
-          status: get(a, "status") || "Draft",
-          tag: get(a, "tag") || "",
-          key: get(a, "security key"),
-          remark: get(a, "remark"),
-        };
-      });
-      save((d) => ({ ...d, records: [...d.records, ...imported] }));
-      setToast(`${imported.length} records imported`);
-    });
+    file
+      .text()
+      .then((text) => {
+        const { records: imported, skipped } = importRecordsFromCsv(text, {
+          ownerId: user.id,
+          existingIds: db.records.map((r) => r.id),
+          today: today(),
+        });
+        if (!imported.length) throw new Error("No transactions found in this file.");
+        save((d) => ({ ...d, records: [...d.records, ...imported] }));
+        setToast(
+          `${imported.length} records imported${skipped ? `, ${skipped} empty rows skipped` : ""}`,
+        );
+      })
+      .catch((error) => setToast(`Import failed: ${error.message}`));
   };
   const groups = group
     ? Object.entries(
@@ -3470,10 +3401,13 @@ function RecordRow({ r, edit, del, update, handoff, share }) {
       <td>
         <button
           className="key"
+          title="Copy security key"
+          aria-label="Copy security key"
           onClick={() => navigator.clipboard?.writeText(r.key)}
         >
           <Icon name="KeyRound" size={14} />
-          {r.key || "Generate"}
+          {/* Masked so the key is not readable over a shoulder; copying still works. */}
+          {r.key ? `••••${String(r.key).slice(-2)}` : "Generate"}
         </button>
         <button className="handoff-link" onClick={handoff}>
           {r.handoffStatus === "Cash released"
@@ -3804,15 +3738,14 @@ function RecordModal({ record, user, save, close, setToast }) {
           ...f,
           amount: +f.amount,
           rate: +f.rate,
-          id: record.id || "TXN-" + Math.floor(1000 + Math.random() * 9000),
+          id: record.id || generateTransactionId(),
           owner: user.id,
           tag: f.status === "Pending" ? "Pending review" : f.tag,
-          key:
-            record.key ||
-            f.key ||
-            String(
-              crypto.getRandomValues(new Uint32Array(1))[0] % 1000000,
-            ).padStart(6, "0"),
+          key: isValidSecurityKey(record.key)
+            ? record.key
+            : isValidSecurityKey(f.key)
+              ? f.key
+              : generateSecurityKey(),
         };
       save((d) => ({
         ...d,
@@ -3959,9 +3892,7 @@ function RecordModal({ record, user, save, close, setToast }) {
               name="key"
               id="security-key"
               readOnly
-              defaultValue={
-                record.key || Math.floor(100000 + Math.random() * 900000)
-              }
+              defaultValue={record.key || generateSecurityKey()}
             />
             <Icon name="ShieldCheck" />
           </div>
@@ -3983,15 +3914,7 @@ function RecordModal({ record, user, save, close, setToast }) {
   );
 }
 function HandoffModal({ record, close, confirm, setToast }) {
-  const receiverId = (record.receiver || "receiver")
-    .normalize("NFKD")
-    .replace(/[^a-z0-9]/gi, "")
-    .toUpperCase()
-    .slice(0, 10);
-  const transferId = String(record.id)
-    .replace(/[^a-z0-9]/gi, "")
-    .toUpperCase();
-  const claimCode = `DC1-${transferId}-${receiverId}-${record.key}`;
+  const claimCode = buildClaimCode(record);
   const [qr, setQr] = useState("");
   const [presented, setPresented] = useState("");
   const [error, setError] = useState("");
@@ -4004,7 +3927,7 @@ function HandoffModal({ record, close, confirm, setToast }) {
     }).then(setQr);
   }, [claimCode]);
   const verify = () => {
-    if (presented.trim().toUpperCase() !== claimCode) {
+    if (!claimCodeMatches(presented, record)) {
       setError(
         "Code does not match this transfer and receiver. Do not release cash.",
       );
@@ -4089,7 +4012,7 @@ function HandoffModal({ record, close, confirm, setToast }) {
                 setPresented(e.target.value);
                 setError("");
               }}
-              placeholder={claimCode}
+              placeholder="Paste or type the receiver's full DC1-… code"
             />
           </label>
           <div id="qr-file-reader" className="qr-reader" />
@@ -4586,69 +4509,6 @@ function AccessCodeModal({ save, close, setToast }) {
       </form>
     </Modal>
   );
-}
-const bytesToBase64 = (bytes) => btoa(String.fromCharCode(...bytes));
-const base64ToBytes = (text) =>
-  Uint8Array.from(atob(text), (c) => c.charCodeAt(0));
-async function encryptBackup(data, password) {
-  const salt = crypto.getRandomValues(new Uint8Array(16)),
-    iv = crypto.getRandomValues(new Uint8Array(12));
-  const material = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(password),
-    "PBKDF2",
-    false,
-    ["deriveKey"],
-  );
-  const key = await crypto.subtle.deriveKey(
-    { name: "PBKDF2", salt, iterations: 250000, hash: "SHA-256" },
-    material,
-    { name: "AES-GCM", length: 256 },
-    false,
-    ["encrypt"],
-  );
-  const encrypted = await crypto.subtle.encrypt(
-    { name: "AES-GCM", iv },
-    key,
-    new TextEncoder().encode(JSON.stringify(data)),
-  );
-  return JSON.stringify({
-    format: "datachat-encrypted-backup",
-    version: 1,
-    salt: bytesToBase64(salt),
-    iv: bytesToBase64(iv),
-    data: bytesToBase64(new Uint8Array(encrypted)),
-  });
-}
-async function decryptBackup(text, password) {
-  const packed = JSON.parse(text);
-  if (packed.format !== "datachat-encrypted-backup")
-    throw new Error("Unsupported backup format");
-  const material = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(password),
-    "PBKDF2",
-    false,
-    ["deriveKey"],
-  );
-  const key = await crypto.subtle.deriveKey(
-    {
-      name: "PBKDF2",
-      salt: base64ToBytes(packed.salt),
-      iterations: 250000,
-      hash: "SHA-256",
-    },
-    material,
-    { name: "AES-GCM", length: 256 },
-    false,
-    ["decrypt"],
-  );
-  const plain = await crypto.subtle.decrypt(
-    { name: "AES-GCM", iv: base64ToBytes(packed.iv) },
-    key,
-    base64ToBytes(packed.data),
-  );
-  return JSON.parse(new TextDecoder().decode(plain));
 }
 function BackupPanel({ db, save, user, setToast }) {
   const [password, setPassword] = useState("");

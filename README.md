@@ -51,7 +51,19 @@ Never give the service-role key or Stripe secret a `VITE_` prefix; anything pref
 
 Plan, role and account status are read only from `datachat_entitlements`, which users can read but never write. Supabase `user_metadata` is editable by every user and is never trusted for access.
 
-The administrator portal (`/admin.html`) signs in with a normal DataChat account that has the `admin` role; the database re-checks that role on every administrator call. It manages one-time access codes and local metadata, and intentionally has no interface for users' messages, contacts, financial records, transaction keys, or encrypted backup contents.
+The administrator portal (`/admin.html`) signs in with a normal DataChat account that has the `admin` role; the database re-checks that role on every administrator call. It lists members, changes their plan, suspends or reactivates them, and manages one-time access codes. It intentionally has no interface for users' messages, contacts, financial records, transaction keys, or encrypted backup contents.
+
+A suspended account is signed out by the app at sign-in. Because a modified app could skip that, the database also refuses the account's writes: sending messages, adding or changing records, creating or joining communities, and redeeming codes. Administrators cannot change their own status.
+
+## Testing
+
+```bash
+npm test            # unit tests: API, claim codes, CSV, encrypted backups
+npm run test:sql    # applies every supabase/*.sql file to a throwaway Postgres (needs Docker) and checks permissions
+npm run dev:offline # runs the app on browser storage only, without touching the production Supabase project
+```
+
+CI (`.github/workflows/ci.yml`) runs the unit tests, the build, the runtime dependency audit and the database permission suite on every push to `main` and every pull request.
 
 ## Account access and backups
 
