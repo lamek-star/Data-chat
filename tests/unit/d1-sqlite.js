@@ -14,6 +14,10 @@ export function createTestD1(migrationsDir = MIGRATIONS) {
   for (const file of readdirSync(migrationsDir).filter((f) => f.endsWith(".sql")).sort())
     db.exec(readFileSync(join(migrationsDir, file), "utf8"));
 
+  const runSync = (sql, args) => {
+    const result = db.prepare(sql).run(...args);
+    return { success: true, meta: { changes: Number(result.changes) } };
+  };
   const statement = (sql, args = []) => ({
     bind: (...values) => statement(sql, values),
     first: async () => {
@@ -21,10 +25,20 @@ export function createTestD1(migrationsDir = MIGRATIONS) {
       return row ? { ...row } : null;
     },
     all: async () => ({ results: db.prepare(sql).all(...args).map((row) => ({ ...row })) }),
-    run: async () => {
-      const result = db.prepare(sql).run(...args);
-      return { success: true, meta: { changes: Number(result.changes) } };
-    },
+    run: async () => runSync(sql, args),
+    _sync: () => runSync(sql, args),
   });
-  return { prepare: (sql) => statement(sql), raw: db };
+  // D1 batch(): all statements succeed or none do.
+  const batch = async (statements) => {
+    db.exec("BEGIN");
+    try {
+      const results = statements.map((s) => s._sync());
+      db.exec("COMMIT");
+      return results;
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+  };
+  return { prepare: (sql) => statement(sql), batch, raw: db };
 }
