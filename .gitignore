@@ -18,3 +18,7 @@ ios/App/App/public/
 
 # Offline test mode (no secrets): VITE_DATACHAT_OFFLINE=1
 !.env.offline
+
+# Release builds are published on GitHub Releases, not committed.
+*.apk
+*.aab
