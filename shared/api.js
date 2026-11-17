@@ -9,6 +9,16 @@
 //   STRIPE_WEBHOOK_SECRET                    secret: verifies Stripe webhooks
 //   APP_URL                                  public app URL for redirects
 import Stripe from "stripe";
+import {
+  AuthError,
+  clearSessionCookie,
+  endSession,
+  publicUser,
+  sessionCookie,
+  sessionUser,
+  startEmailLogin,
+  verifyEmailLogin,
+} from "./auth.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DEFAULT_APP_URL = "https://datachat.harmongt.uk";
@@ -43,8 +53,44 @@ function corsHeaders(request, env) {
   };
 }
 
-function json(request, env, body, status = 200) {
-  return Response.json(body, { status, headers: corsHeaders(request, env) });
+function json(request, env, body, status = 200, extraHeaders = {}) {
+  return Response.json(body, { status, headers: { ...corsHeaders(request, env), ...extraHeaders } });
+}
+
+// Email-code sign-in backed by D1 (shared/auth.js).
+async function cloudflareAuth(request, env, url) {
+  const ip = request.headers.get("CF-Connecting-IP") || "unknown";
+  try {
+    if (request.method === "POST") {
+      // JSON only: blocks cross-site form posts (CSRF) on top of SameSite cookies.
+      if (!(request.headers.get("Content-Type") || "").includes("application/json"))
+        return json(request, env, { error: "Send JSON." }, 415);
+    }
+    if (url.pathname === "/api/auth/email/start" && request.method === "POST") {
+      const { email } = await request.json().catch(() => ({}));
+      await startEmailLogin(env, { email, ip });
+      return json(request, env, { sent: true });
+    }
+    if (url.pathname === "/api/auth/email/verify" && request.method === "POST") {
+      const body = await request.json().catch(() => ({}));
+      const { token, user, expiresAt } = await verifyEmailLogin(env, { email: body.email, code: body.code, profile: body.profile, ip });
+      // Native apps keep the token in secure storage; browsers only get the HttpOnly cookie.
+      const payload = body.client === "native" ? { user, token, expiresAt } : { user, expiresAt };
+      return json(request, env, payload, 200, { "Set-Cookie": sessionCookie(token) });
+    }
+    if (url.pathname === "/api/auth/session" && request.method === "GET") {
+      const user = await sessionUser(env, request);
+      return user ? json(request, env, { user: publicUser(user) }) : json(request, env, { error: "Not signed in." }, 401);
+    }
+    if (url.pathname === "/api/auth/logout" && request.method === "POST") {
+      await endSession(env, request);
+      return json(request, env, { signedOut: true }, 200, { "Set-Cookie": clearSessionCookie() });
+    }
+    return json(request, env, { error: "API route not found." }, 404);
+  } catch (error) {
+    if (error instanceof AuthError) return json(request, env, { error: error.message }, error.status);
+    throw error;
+  }
 }
 
 const supabaseConfigured = (env) =>
@@ -140,6 +186,9 @@ export async function handleApi(request, env, deps = {}) {
 
     if (url.pathname === "/api/auth/login" && request.method === "POST")
       return await usernameLogin(request, env);
+
+    if (url.pathname.startsWith("/api/auth/") && url.pathname !== "/api/auth/login")
+      return await cloudflareAuth(request, env, url);
 
     if (url.pathname === "/api/stripe/config" && request.method === "GET")
       return json(request, env, {
