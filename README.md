@@ -55,6 +55,10 @@ The administrator portal (`/admin.html`) signs in with a normal DataChat account
 
 A suspended account is signed out by the app at sign-in. Because a modified app could skip that, the database also refuses the account's writes: sending messages, adding or changing records, creating or joining communities, and redeeming codes. Administrators cannot change their own status.
 
+## Moving to Cloudflare
+
+DataChat is moving off Supabase to Cloudflare only: D1 for data, Email Service for sign-in codes from your own domain, R2 for files and Durable Objects for live chat. Step 1 (email-code sign-in on D1) is built and tested but not yet switched on; see [docs/CLOUDFLARE_SETUP.md](docs/CLOUDFLARE_SETUP.md) for the exact commands.
+
 ## Testing
 
 ```bash
