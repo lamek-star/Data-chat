@@ -169,6 +169,33 @@ export async function listCloudAccessCodes() {
   return data || [];
 }
 
+export async function listCloudMembers() {
+  const client = requireSupabase();
+  const { data, error } = await client.rpc("admin_list_members");
+  if (error) throw error;
+  return data || [];
+}
+
+export async function setCloudMemberPlan(userId, plan) {
+  const client = requireSupabase();
+  const { data, error } = await client.rpc("admin_set_user_plan", {
+    target_user: userId,
+    new_plan: plan,
+  });
+  if (error) throw error;
+  return data;
+}
+
+export async function setCloudMemberStatus(userId, status) {
+  const client = requireSupabase();
+  const { data, error } = await client.rpc("admin_set_user_status", {
+    target_user: userId,
+    new_status: status,
+  });
+  if (error) throw error;
+  return data;
+}
+
 export async function signOut() {
   const supabase = requireSupabase();
   const { error } = await supabase.auth.signOut();

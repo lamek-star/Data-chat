@@ -210,6 +210,60 @@ select tests.expect_error('member cannot upload into another member''s backup fo
   $$insert into storage.objects (bucket_id, name) values ('private-backups', '2b9e4c7d-1a3f-4e5b-8c6d-7e8f9a0b1c2d/evil.dcbackup')$$);
 rollback;
 
+-- ---------------------------------------------- member list + suspension --
+begin;
+set local role authenticated;
+select set_config('request.jwt.claim.sub', :alice, true);
+select tests.expect_error('member cannot list members',
+  $$select public.admin_list_members()$$);
+select tests.expect_error('member cannot suspend anyone',
+  $$select public.admin_set_user_status('c4d5e6f7-a8b9-4c0d-9e1f-2a3b4c5d6e7f', 'suspended')$$);
+rollback;
+
+begin;
+set local role authenticated;
+select set_config('request.jwt.claim.sub', :bob, true);
+select tests.expect_eq('admin lists every member with plan and status',
+  (select count(*)::text from public.admin_list_members() m where m ? 'plan' and m ? 'status' and m ? 'email'), '3');
+select tests.expect_error('admin cannot suspend themselves',
+  $$select public.admin_set_user_status(auth.uid(), 'suspended')$$);
+select tests.expect_error('admin cannot set an unknown status',
+  $$select public.admin_set_user_status('c4d5e6f7-a8b9-4c0d-9e1f-2a3b4c5d6e7f', 'banned')$$);
+select tests.expect_eq('admin suspends a member',
+  public.admin_set_user_status('c4d5e6f7-a8b9-4c0d-9e1f-2a3b4c5d6e7f', 'suspended') ->> 'status', 'suspended');
+select public.admin_create_pro_code('DCP-SUSPENDED-TEST');
+commit;
+
+begin;
+set local role authenticated;
+select set_config('request.jwt.claim.sub', :carol, true);
+select tests.expect_eq('suspended member can still read own messages',
+  (select count(*)::text from public.direct_messages), '2');
+select tests.expect_error('suspended member cannot send messages',
+  $$insert into public.direct_messages (sender_id, recipient_id, payload) values (auth.uid(), '7f3c1a52-9d0e-4b8a-a1f2-0c5d6e7f8a91', '{}')$$,
+  'insufficient_privilege');
+select tests.expect_error('suspended member cannot add records',
+  $$insert into public.app_data (app_id, user_id, entity_type, entity_id) values ('datachat', auth.uid(), 'record', 'S1')$$,
+  'insufficient_privilege');
+select tests.expect_error('suspended member cannot redeem codes',
+  $$select public.redeem_datachat_pro_code('DCP-SUSPENDED-TEST')$$);
+rollback;
+
+begin;
+set local role authenticated;
+select set_config('request.jwt.claim.sub', :bob, true);
+select tests.expect_eq('admin reactivates the member',
+  public.admin_set_user_status('c4d5e6f7-a8b9-4c0d-9e1f-2a3b4c5d6e7f', 'active') ->> 'status', 'active');
+commit;
+
+begin;
+set local role authenticated;
+select set_config('request.jwt.claim.sub', :carol, true);
+insert into public.direct_messages (sender_id, recipient_id, payload) values (auth.uid(), '7f3c1a52-9d0e-4b8a-a1f2-0c5d6e7f8a91', '{"text":"back"}');
+select tests.expect_eq('reactivated member can send again',
+  (select count(*)::text from public.direct_messages where sender_id = auth.uid()), '1');
+rollback;
+
 -- ------------------------------------------------- sign-up still works --
 insert into auth.users (email, raw_user_meta_data)
 values ('dave@example.test', '{"name":"Dave","username":"dave","phone":"+444"}');

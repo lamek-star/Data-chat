@@ -24,6 +24,9 @@ import {
   isCloudAdmin,
   createCloudAccessCode,
   listCloudAccessCodes,
+  listCloudMembers,
+  setCloudMemberPlan,
+  setCloudMemberStatus,
 } from "./cloud/supabaseClient";
 
 const KEY = "datachat-v1";
@@ -80,6 +83,7 @@ function AdminApp() {
     [checking, setChecking] = useState(cloudConfigured),
     [error, setError] = useState(""),
     [showPassword, setShowPassword] = useState(false),
+    [members, setMembers] = useState([]),
     [toast, setToast] = useState("");
   const accessCodeUserName = (accessCode) =>
     accessCode.usedByName ||
@@ -104,8 +108,12 @@ function AdminApp() {
       await signOut().catch(() => {});
       throw new Error("This account is not a DataChat administrator.");
     }
-    const codes = await listCloudAccessCodes();
+    const [codes, cloudMembers] = await Promise.all([
+      listCloudAccessCodes(),
+      listCloudMembers(),
+    ]);
     setDb((current) => ({ ...current, accessCodes: codes }));
+    setMembers(cloudMembers);
     setLoggedIn(true);
   };
   useEffect(() => {
@@ -158,12 +166,21 @@ function AdminApp() {
         </form>
       </main>
     );
-  const users = (db.users || []).filter((x) => x.role !== "admin");
-  const updateUser = (id, changes) =>
-    setDb((d) => ({
-      ...d,
-      users: d.users.map((x) => (x.id === id ? { ...x, ...changes } : x)),
-    }));
+  // Members come from the database; every change is saved there (the
+  // database re-checks the admin role) and the list is reloaded so the
+  // screen never shows a change that did not happen.
+  const users = members.filter((x) => x.role !== "admin");
+  const updateUser = async (id, changes) => {
+    try {
+      if (changes.plan) await setCloudMemberPlan(id, changes.plan);
+      if (changes.status) await setCloudMemberStatus(id, changes.status);
+      setToast("Member updated");
+    } catch (updateError) {
+      setToast(`Update failed: ${updateError.message}`);
+    } finally {
+      setMembers(await listCloudMembers().catch(() => members));
+    }
+  };
   const generate = async () => {
     const code = makeCode();
     try {
@@ -306,7 +323,7 @@ function AdminApp() {
                 <div className="admin-identity">
                   <b>{u.name}</b>
                   <span>{u.email}</span>
-                  <small>ID {u.id}</small>
+                  <small>{u.username ? `@${u.username} · ` : ""}ID {u.id}</small>
                 </div>
                 <label>
                   Plan
@@ -327,7 +344,6 @@ function AdminApp() {
                     }
                   >
                     <option value="active">Active</option>
-                    <option value="pending">Pending</option>
                     <option value="suspended">Suspended</option>
                   </select>
                 </label>
