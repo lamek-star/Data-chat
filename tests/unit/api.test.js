@@ -82,6 +82,15 @@ describe("username sign-in", () => {
     expect(calls).toHaveLength(0);
   });
 
+  it("accepts the new SUPABASE_SECRET_KEY name and sends sb_secret_ keys only as apikey", async () => {
+    const e = { ...env, SUPABASE_SERVICE_ROLE_KEY: undefined, SUPABASE_SECRET_KEY: "sb_secret_example" };
+    const r = await post("/api/auth/login", { username: "abel", password: "right-password" }, {}, e);
+    expect(r.status).toBe(200);
+    const lookup = calls.find((c) => c.url.endsWith("/rpc/datachat_login_email"));
+    expect(lookup.init.headers.apikey).toBe("sb_secret_example");
+    expect(lookup.init.headers.Authorization).toBeUndefined();
+  });
+
   it("fails closed when the service role is not configured", async () => {
     const r = await post("/api/auth/login", { username: "abel", password: "right-password" }, {}, { ...env, SUPABASE_SERVICE_ROLE_KEY: "" });
     expect(r.status).toBe(503);

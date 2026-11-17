@@ -4,7 +4,7 @@
 //
 // Required configuration (Worker secrets / .env):
 //   SUPABASE_URL, SUPABASE_ANON_KEY          public project values
-//   SUPABASE_SERVICE_ROLE_KEY                secret: grants Pro, username login
+//   SUPABASE_SERVICE_ROLE_KEY or SUPABASE_SECRET_KEY   secret: grants Pro, username login
 //   STRIPE_SECRET_KEY, STRIPE_PRO_PRICE_ID   secret / price for checkout
 //   STRIPE_WEBHOOK_SECRET                    secret: verifies Stripe webhooks
 //   APP_URL                                  public app URL for redirects
@@ -93,15 +93,27 @@ async function cloudflareAuth(request, env, url) {
   }
 }
 
+// Accept both names: Supabase's newer dashboards call it the "secret key"
+// (sb_secret_...), older ones the "service_role key" (a JWT).
+const serviceKey = (env) => env.SUPABASE_SERVICE_ROLE_KEY || env.SUPABASE_SECRET_KEY || "";
+
 const supabaseConfigured = (env) =>
-  Boolean(env.SUPABASE_URL && env.SUPABASE_ANON_KEY && env.SUPABASE_SERVICE_ROLE_KEY);
+  Boolean(env.SUPABASE_URL && env.SUPABASE_ANON_KEY && serviceKey(env));
+
+// New sb_secret_ keys are not JWTs: send them only as apikey. Legacy
+// service_role JWTs also go in the Authorization header.
+function serviceHeaders(env) {
+  const key = serviceKey(env);
+  return key.startsWith("sb_")
+    ? { apikey: key }
+    : { apikey: key, Authorization: `Bearer ${key}` };
+}
 
 async function supabaseRpc(env, name, args) {
   const response = await fetch(`${env.SUPABASE_URL}/rest/v1/rpc/${name}`, {
     method: "POST",
     headers: {
-      apikey: env.SUPABASE_SERVICE_ROLE_KEY,
-      Authorization: `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`,
+      ...serviceHeaders(env),
       "Content-Type": "application/json",
     },
     body: JSON.stringify(args),
