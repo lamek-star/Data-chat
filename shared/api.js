@@ -118,12 +118,15 @@ async function usernameLogin(request, env) {
   });
 }
 
-export async function handleApi(request, env) {
+// deps.stripe lets tests supply a fake Stripe client.
+export async function handleApi(request, env, deps = {}) {
   const url = new URL(request.url);
   if (request.method === "OPTIONS")
     return new Response(null, { status: 204, headers: corsHeaders(request, env) });
 
-  const stripe = env.STRIPE_SECRET_KEY ? new Stripe(env.STRIPE_SECRET_KEY) : null;
+  const stripe = env.STRIPE_SECRET_KEY
+    ? deps.stripe || new Stripe(env.STRIPE_SECRET_KEY)
+    : null;
   const checkoutConfigured = Boolean(stripe && env.STRIPE_PRO_PRICE_ID);
 
   try {

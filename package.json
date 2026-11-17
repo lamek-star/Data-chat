@@ -13,7 +13,10 @@
     "preview": "vite preview",
     "mobile:sync": "npm run build && cap sync",
     "android:open": "npm run mobile:sync && cap open android",
-    "ios:open": "npm run mobile:sync && cap open ios"
+    "ios:open": "npm run mobile:sync && cap open ios",
+    "dev:offline": "vite --mode offline",
+    "test": "vitest run",
+    "test:sql": "bash tests/sql/run.sh"
   },
   "dependencies": {
     "@capacitor/android": "^8.4.2",
@@ -36,5 +39,8 @@
     "stripe": "^22.3.2",
     "vite": "latest",
     "wrangler": "^4.26.1"
+  },
+  "devDependencies": {
+    "vitest": "3.2.4"
   }
 }

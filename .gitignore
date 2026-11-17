@@ -15,3 +15,6 @@ release/
 public/assets/*-source.png
 ios/App/Pods/
 ios/App/App/public/
+
+# Offline test mode (no secrets): VITE_DATACHAT_OFFLINE=1
+!.env.offline
