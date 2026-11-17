@@ -20,3 +20,9 @@ SUPABASE_URL = "https://ufneentdbsdmfiwvjthj.supabase.co"
 SUPABASE_ANON_KEY = "sb_publishable_kF_WLO_XatQrqmp_a9Ls2g_IcA6NTgL"
 # Secrets: set with `wrangler secret put <NAME>`, never in this file:
 #   STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, SUPABASE_SERVICE_ROLE_KEY
+
+[[d1_databases]]
+binding = "DB"
+database_name = "datachat"
+database_id = "73bb0aae-ecdb-43f4-a8d7-8b3a9e4ca151"
+migrations_dir = "migrations"
