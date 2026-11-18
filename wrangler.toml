@@ -15,8 +15,14 @@ STRIPE_PRO_PRICE_ID = "price_1TvkwtHmCwS1qvj6UKa8921s"
 STRIPE_CHECKOUT_MODE = "payment"
 PRO_PLAN_NAME = "DataChat Pro"
 PRO_PLAN_PRICE_LABEL = "Stripe checkout"
+# Sign-in codes. Email Routing is on for harmongt.uk; until paid Email
+# Service is enabled, codes reach only verified destination addresses.
+AUTH_EMAIL_FROM = "DataChat <no-reply@harmongt.uk>"
 # Secrets: set with `wrangler secret put <NAME>`, never in this file:
 #   AUTH_SECRET, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET
+
+[[send_email]]
+name = "EMAIL"
 
 [[d1_databases]]
 binding = "DB"

@@ -40,6 +40,7 @@ import {
   sendMessage,
   updateProfile,
 } from "./data.js";
+import { requestLocation } from "./email.js";
 
 const DEFAULT_APP_URL = "https://datachat.harmongt.uk";
 const MAX_JSON_BYTES = 9_000_000;
@@ -96,7 +97,7 @@ async function authRoutes(request, env, url) {
   const ip = request.headers.get("CF-Connecting-IP") || "unknown";
   if (url.pathname === "/api/auth/email/start" && request.method === "POST") {
     const { email } = await readJson(request);
-    await startEmailLogin(env, { email, ip });
+    await startEmailLogin(env, { email, ip, location: requestLocation(request.cf) });
     return json(request, env, { sent: true });
   }
   if (url.pathname === "/api/auth/email/verify" && request.method === "POST") {

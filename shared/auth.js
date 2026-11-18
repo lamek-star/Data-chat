@@ -13,6 +13,8 @@
 //   AUTH_EMAIL_FROM   e.g. "DataChat <no-reply@datachat.harmongt.uk>"
 //   DEV_LOG_EMAIL_CODES=1  local development only: log codes instead of sending
 
+import { loginCodeEmail } from "./email.js";
+
 const CODE_TTL_MS = 10 * 60 * 1000;
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_CODE_ATTEMPTS = 5;
@@ -86,17 +88,11 @@ async function allow(env, key, [limit, windowMs], now) {
   return true;
 }
 
-async function sendCodeEmail(env, email, code) {
-  const text = `Your DataChat sign-in code is ${code}\n\nIt expires in 10 minutes. If you did not ask for it, ignore this email; nobody can sign in without the code.`;
+async function sendCodeEmail(env, email, code, location) {
   if (env.EMAIL) {
+    const message = loginCodeEmail({ code, appUrl: env.APP_URL, location, minutes: CODE_TTL_MS / 60000 });
     try {
-      await env.EMAIL.send({
-        from: env.AUTH_EMAIL_FROM,
-        to: email,
-        subject: `${code} is your DataChat code`,
-        text,
-        html: `<p>Your DataChat sign-in code is</p><p style="font-size:28px;font-weight:700;letter-spacing:4px">${code}</p><p>It expires in 10 minutes. If you did not ask for it, ignore this email; nobody can sign in without the code.</p>`,
-      });
+      await env.EMAIL.send({ from: env.AUTH_EMAIL_FROM, to: email, ...message });
       return;
     } catch (error) {
       console.error("Login email failed", error.code || error.name, error.message);
@@ -104,6 +100,9 @@ async function sendCodeEmail(env, email, code) {
         throw new AuthError(429, "Too many emails right now. Try again in a few minutes.");
       if (error.code === "E_RECIPIENT_SUPPRESSED")
         throw new AuthError(400, "Email to this address is blocked. Use a different address.");
+      // Free Email Routing only delivers to verified addresses.
+      if (error.code === "E_RECIPIENT_NOT_ALLOWED" || error.code === "E_RECIPIENT_PLAN_RESTRICTED")
+        throw new AuthError(400, "DataChat can't send codes to this address yet. Contact support.");
       throw new AuthError(503, "The sign-in email could not be sent. Try again shortly.");
     }
   }
@@ -115,7 +114,7 @@ async function sendCodeEmail(env, email, code) {
 }
 
 /** Step 1: email a fresh code. The response is the same whether or not the account exists. */
-export async function startEmailLogin(env, { email: rawEmail, ip = "unknown" }, now = Date.now()) {
+export async function startEmailLogin(env, { email: rawEmail, ip = "unknown", location = "" }, now = Date.now()) {
   requireConfig(env);
   const email = normalizeEmail(rawEmail);
   if (!(await allow(env, `start:ip:${ip}`, LIMITS.startPerIp, now)) || !(await allow(env, `start:email:${email}`, LIMITS.startPerEmail, now)))
@@ -125,7 +124,7 @@ export async function startEmailLogin(env, { email: rawEmail, ip = "unknown" }, 
     "INSERT INTO login_codes (email, code_hash, expires_at, attempts, created_at) VALUES (?, ?, ?, 0, ?) " +
       "ON CONFLICT(email) DO UPDATE SET code_hash = excluded.code_hash, expires_at = excluded.expires_at, attempts = 0, created_at = excluded.created_at",
   ).bind(email, await hmac(env.AUTH_SECRET, `${email}:${code}`), now + CODE_TTL_MS, now).run();
-  await sendCodeEmail(env, email, code);
+  await sendCodeEmail(env, email, code, location);
   return { sent: true };
 }
 
