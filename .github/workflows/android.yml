@@ -1,0 +1,97 @@
+name: Android APK
+
+# Builds the DataChat Android app and publishes it as a downloadable APK.
+# Latest build (fixed link):
+#   https://github.com/lamek-star/Data-chat/releases/download/android-latest/DataChat.apk
+#
+# Signing: without a key this produces a debug-signed APK (fine to sideload
+# for testing). To ship a properly signed release APK, add these repository
+# secrets (Settings > Secrets and variables > Actions):
+#   ANDROID_KEYSTORE_BASE64   your upload keystore (.jks), base64-encoded
+#   ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, feat/cloudflare-auth]
+    tags: ["v*"]
+
+permissions:
+  contents: write # publish the APK as a release asset
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    env:
+      HAS_SIGNING_KEY: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - run: npm ci
+      - name: Build web app
+        run: npm run build
+      - name: Copy web app into the Android project
+        run: npx cap sync android
+
+      - name: Use the release signing key
+        if: env.HAS_SIGNING_KEY == 'true'
+        working-directory: android
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 --decode > app/release.jks
+          {
+            echo "storeFile=app/release.jks"
+            echo "storePassword=$KEYSTORE_PASSWORD"
+            echo "keyAlias=$KEY_ALIAS"
+            echo "keyPassword=$KEY_PASSWORD"
+          } > keystore.properties
+
+      - name: Build APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          if [ "$HAS_SIGNING_KEY" = "true" ]; then
+            ./gradlew --no-daemon assembleRelease
+            cp app/build/outputs/apk/release/app-release.apk ../DataChat.apk
+          else
+            ./gradlew --no-daemon assembleDebug
+            cp app/build/outputs/apk/debug/app-debug.apk ../DataChat.apk
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DataChat-apk
+          path: DataChat.apk
+
+      - name: Publish as "android-latest" (fixed download link)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          kind=$([ "$HAS_SIGNING_KEY" = "true" ] && echo "Release-signed" || echo "Debug-signed (for testing)")
+          notes="Built from ${GITHUB_REF_NAME} at ${GITHUB_SHA::7}. ${kind}. If Android refuses to install over an older DataChat app, uninstall the old one first."
+          gh release delete android-latest --yes --cleanup-tag 2>/dev/null || true
+          gh release create android-latest DataChat.apk --prerelease --target "$GITHUB_SHA" \
+            --title "DataChat for Android (latest build)" --notes "$notes"
+
+      - name: Attach to version release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --title "DataChat $GITHUB_REF_NAME" --generate-notes
+          gh release upload "$GITHUB_REF_NAME" DataChat.apk --clobber
