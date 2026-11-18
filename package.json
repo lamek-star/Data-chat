@@ -4,9 +4,8 @@
   "version": "1.1.0",
   "type": "module",
   "scripts": {
-    "dev": "concurrently --kill-others-on-fail \"vite\" \"node server/index.js\"",
+    "dev": "concurrently --kill-others-on-fail \"vite\" \"wrangler dev --port 4242 --local\"",
     "dev:client": "vite",
-    "dev:payments": "node server/index.js",
     "build": "vite build",
     "deploy:cloudflare": "npm run build && wrangler deploy",
     "worker:dev": "npm run build && wrangler dev",
@@ -16,14 +15,14 @@
     "ios:open": "npm run mobile:sync && cap open ios",
     "dev:offline": "vite --mode offline",
     "test": "vitest run",
-    "test:sql": "bash tests/sql/run.sh"
+    "dev:api": "wrangler dev --port 4242 --local",
+    "db:migrate:local": "wrangler d1 migrations apply datachat --local"
   },
   "dependencies": {
     "@capacitor/android": "^8.4.2",
     "@capacitor/cli": "^8.4.2",
     "@capacitor/core": "^8.4.2",
     "@capacitor/ios": "^8.4.2",
-    "@supabase/supabase-js": "^2.36.0",
     "@vitejs/plugin-react": "latest",
     "concurrently": "^9.2.4",
     "cors": "^2.8.6",

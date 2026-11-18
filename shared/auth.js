@@ -171,6 +171,7 @@ export const publicUser = (row) => ({
   phone: row.phone,
   country: row.country,
   contactCode: row.contact_code,
+  avatarUrl: row.avatar_url ?? null,
   plan: row.plan,
   role: row.role,
   status: row.status,

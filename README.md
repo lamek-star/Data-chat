@@ -14,7 +14,16 @@ npm install
 npm run dev
 ```
 
-This starts both Vite and the private payment server. Copy `.env.example` to `.env`, then add a Stripe test secret key and the ID of a recurring Pro Price. Never use a `VITE_` prefix for the Stripe secret key.
+This starts Vite and the Cloudflare Worker locally (`wrangler dev`) with a local D1 database. The first time, create the local tables and a `.dev.vars` file (git-ignored) so sign-in codes are printed in the terminal instead of emailed:
+
+```bash
+npm run db:migrate:local
+```
+
+```
+AUTH_SECRET=local-development-secret-at-least-32-chars-long
+DEV_LOG_EMAIL_CODES=1
+```
 
 For local webhook testing, install the Stripe CLI and forward events:
 
@@ -22,52 +31,51 @@ For local webhook testing, install the Stripe CLI and forward events:
 stripe listen --forward-to localhost:4242/api/stripe/webhook
 ```
 
-Copy the reported `whsec_...` value into `STRIPE_WEBHOOK_SECRET`. Card checkout creates a Stripe-hosted session for the signed-in account. Pro is granted only by the server: the Stripe webhook (and the post-checkout status check) records it in the `datachat_entitlements` table with the Supabase service-role key. Cash customers can instead redeem a one-time Pro code generated in the administrator portal; the database records Pro when the code is redeemed.
+Card checkout creates a Stripe-hosted session for the signed-in member. Pro is granted only by the server: the Stripe webhook (and the post-checkout status check) sets the member's plan in D1. Cash customers can instead redeem a one-time Pro code generated in the administrator portal.
 
-The API server (`shared/api.js`, run locally by `server/index.js` and in production by the Cloudflare Worker) needs these settings in `.env` locally, or as Worker variables/secrets:
+## How it runs (Cloudflare only)
 
-| Name | Where | Purpose |
+Everything runs on your Cloudflare account; there is no Supabase or other backend.
+
+| Piece | Cloudflare service | Code |
 |---|---|---|
-| `SUPABASE_URL`, `SUPABASE_ANON_KEY` | `.env` / `wrangler.toml` vars (public) | Verify sign-ins |
-| `SUPABASE_SERVICE_ROLE_KEY` | `.env` / `wrangler secret put` (**secret**) | Grant Pro, resolve usernames at sign-in |
-| `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | `.env` / `wrangler secret put` (**secret**) | Checkout and webhooks |
-| `STRIPE_PRO_PRICE_ID`, `APP_URL` | `.env` / `wrangler.toml` vars | Checkout price and redirect URL |
+| Web app and API | Worker (`worker/index.js`) | `shared/api.js` |
+| Accounts, records, messages, Pro codes | D1 (`migrations/`) | `shared/auth.js`, `shared/data.js` |
+| Sign-in codes by email | Email Service (`send_email` binding) | `shared/auth.js` |
+| Profile photos (optional) | R2 (`FILES` binding); without it small photos are stored in D1 | `shared/data.js` |
 
-Never give the service-role key or Stripe secret a `VITE_` prefix; anything prefixed `VITE_` is shipped to every browser.
+Sign-in is passwordless: members enter their email and the 8-digit code they receive. The browser keeps the session in an HttpOnly cookie; the Android/iOS app keeps a token. Plan, role and status are stored in D1 and changed only by server code; every API call checks the signed-in member, so one member can never read or change another member's data. Chat messages arrive by checking for new ones every few seconds while the app is open.
 
-## Security setup (required)
+Setup, with the exact commands: [docs/CLOUDFLARE_SETUP.md](docs/CLOUDFLARE_SETUP.md).
 
-1. In the Supabase SQL Editor, run in order: `supabase/schema.sql`, `supabase/realtime_chat.sql`, `supabase/production_upgrade.sql`, `supabase/auth_codes_upgrade.sql`, then `supabase/security_hardening.sql`.
-2. Make your own account an administrator (replace the email):
+| Setting | Where | Purpose |
+|---|---|---|
+| `DB` | `wrangler.toml` `[[d1_databases]]` | The database |
+| `EMAIL`, `AUTH_EMAIL_FROM` | `wrangler.toml` `[[send_email]]` and `[vars]` | Sign-in emails |
+| `AUTH_SECRET` | `wrangler secret put` (**secret**) | Protects sign-in codes |
+| `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | `wrangler secret put` (**secret**) | Checkout and webhooks |
+| `STRIPE_PRO_PRICE_ID`, `APP_URL` | `wrangler.toml` `[vars]` | Checkout price and redirect URL |
 
-   ```sql
-   insert into public.datachat_entitlements (user_id, role, source)
-   select id, 'admin', 'bootstrap' from auth.users where email = 'you@example.com'
-   on conflict (user_id) do update set role = 'admin', updated_at = now();
-   ```
+Never give a secret a `VITE_` prefix; anything prefixed `VITE_` is shipped to every browser.
 
-3. Set the Worker secrets: `wrangler secret put SUPABASE_SERVICE_ROLE_KEY`, `wrangler secret put STRIPE_SECRET_KEY`, `wrangler secret put STRIPE_WEBHOOK_SECRET`.
-4. In the Stripe dashboard, point a webhook for `checkout.session.completed` and `checkout.session.async_payment_succeeded` at `https://<your domain>/api/stripe/webhook`.
+## Administration
 
-Plan, role and account status are read only from `datachat_entitlements`, which users can read but never write. Supabase `user_metadata` is editable by every user and is never trusted for access.
+The administrator portal (`/admin.html`) signs in with an emailed code like the app. Make your account an administrator once, after you have signed in to the app at least once (replace the email):
 
-The administrator portal (`/admin.html`) signs in with a normal DataChat account that has the `admin` role; the database re-checks that role on every administrator call. It lists members, changes their plan, suspends or reactivates them, and manages one-time access codes. It intentionally has no interface for users' messages, contacts, financial records, transaction keys, or encrypted backup contents.
+```bash
+npx wrangler d1 execute datachat --remote --command "UPDATE users SET role='admin' WHERE email='you@example.com'"
+```
 
-A suspended account is signed out by the app at sign-in. Because a modified app could skip that, the database also refuses the account's writes: sending messages, adding or changing records, creating or joining communities, and redeeming codes. Administrators cannot change their own status.
-
-## Moving to Cloudflare
-
-DataChat is moving off Supabase to Cloudflare only: D1 for data, Email Service for sign-in codes from your own domain, R2 for files and Durable Objects for live chat. Step 1 (email-code sign-in on D1) is built and tested but not yet switched on; see [docs/CLOUDFLARE_SETUP.md](docs/CLOUDFLARE_SETUP.md) for the exact commands.
+The Worker re-checks the admin role on every administrator call. The portal lists members, changes their plan, suspends or reactivates them, and manages one-time Pro codes. It intentionally has no interface for members' messages, contacts, financial records, transaction keys, or encrypted backup contents. Suspending a member signs them out everywhere and blocks all of their requests; administrators cannot change their own status.
 
 ## Testing
 
 ```bash
-npm test            # unit tests: API, claim codes, CSV, encrypted backups
-npm run test:sql    # applies every supabase/*.sql file to a throwaway Postgres (needs Docker) and checks permissions
-npm run dev:offline # runs the app on browser storage only, without touching the production Supabase project
+npm test            # unit tests: sign-in, member data permissions, Stripe, claim codes, CSV, backups
+npm run dev:offline # runs the app on browser storage only, without the API
 ```
 
-CI (`.github/workflows/ci.yml`) runs the unit tests, the build, the runtime dependency audit and the database permission suite on every push to `main` and every pull request.
+CI (`.github/workflows/ci.yml`) runs the unit tests, the build and the runtime dependency audit on every push to `main` and every pull request.
 
 ## Account access and backups
 

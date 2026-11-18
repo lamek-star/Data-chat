@@ -101,12 +101,33 @@ DEV_LOG_EMAIL_CODES=1
 
 Apply migrations locally first: `npx wrangler d1 migrations apply datachat --local`.
 
-## Next steps
+## 5. Make yourself administrator
 
-2. Switch the app's sign-in screen to these endpoints and protect the admin
-   portal with Cloudflare Access.
-3. Move profiles, messages, records and Pro codes to D1 (every permission
-   check in Worker code, ported from the 63 database tests).
-4. Files to R2; live chat to Durable Objects.
-5. Copy existing users and data from Supabase, run both for a few days,
-   then turn Supabase off.
+Sign in to the app once with your email, then:
+
+```bash
+npx wrangler d1 execute datachat --remote --command "UPDATE users SET role='admin' WHERE email='you@example.com'"
+```
+
+Open `https://datachat.harmongt.uk/admin.html` and sign in with a code.
+
+## Optional: profile photos in R2
+
+Without R2, photos up to 300 KB (the app shrinks them first) are stored in
+D1. For full-size storage, create a bucket and bind it:
+
+```bash
+npx wrangler r2 bucket create datachat-files
+```
+
+```toml
+[[r2_buckets]]
+binding = "FILES"
+bucket_name = "datachat-files"
+```
+
+## Possible later improvements
+
+- Instant chat delivery with Durable Objects (today new messages are
+  fetched every 4 seconds while the app is open).
+- Cloudflare Access in front of `/admin.html` as a second lock.

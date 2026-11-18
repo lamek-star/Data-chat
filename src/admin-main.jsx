@@ -19,7 +19,8 @@ import "./styles.css";
 import {
   cloudConfigured,
   getSession,
-  signIn,
+  requestEmailCode,
+  verifyEmailCode,
   signOut,
   isCloudAdmin,
   createCloudAccessCode,
@@ -27,7 +28,7 @@ import {
   listCloudMembers,
   setCloudMemberPlan,
   setCloudMemberStatus,
-} from "./cloud/supabaseClient";
+} from "./cloud/cloudClient";
 
 const KEY = "datachat-v1";
 const sampleAdmin = {
@@ -82,7 +83,7 @@ function AdminApp() {
     [loggedIn, setLoggedIn] = useState(false),
     [checking, setChecking] = useState(cloudConfigured),
     [error, setError] = useState(""),
-    [showPassword, setShowPassword] = useState(false),
+    [codeEmail, setCodeEmail] = useState(""),
     [members, setMembers] = useState([]),
     [toast, setToast] = useState("");
   const accessCodeUserName = (accessCode) =>
@@ -100,14 +101,12 @@ function AdminApp() {
       return () => clearTimeout(t);
     }
   }, [toast]);
-  // Administrators are normal Supabase accounts whose datachat_entitlements
-  // row has role = 'admin'. The database re-checks that role on every call,
-  // so this screen is a convenience, not the security boundary.
+  // Administrators are normal DataChat accounts with role = 'admin' in D1.
+  // The Worker re-checks that role on every call, so this screen is a
+  // convenience, not the security boundary.
   const openAdminSession = async () => {
-    if (!(await isCloudAdmin())) {
-      await signOut().catch(() => {});
-      throw new Error("This account is not a DataChat administrator.");
-    }
+    // A non-admin keeps their normal app session; the portal just refuses.
+    if (!(await isCloudAdmin())) throw new Error("This account is not a DataChat administrator.");
     const [codes, cloudMembers] = await Promise.all([
       listCloudAccessCodes(),
       listCloudMembers(),
@@ -120,7 +119,7 @@ function AdminApp() {
     if (!cloudConfigured) return;
     getSession()
       .then((session) => (session?.user ? openAdminSession() : null))
-      .catch(() => {})
+      .catch((sessionError) => setError(sessionError.message))
       .finally(() => setChecking(false));
   }, []);
   const login = async (e) => {
@@ -130,7 +129,13 @@ function AdminApp() {
     if (!cloudConfigured)
       return setError("The admin portal needs the cloud backend to be configured.");
     try {
-      await signIn(String(f.email).trim().toLowerCase(), f.password);
+      if (!codeEmail) {
+        const email = String(f.email).trim().toLowerCase();
+        await requestEmailCode(email);
+        setCodeEmail(email);
+        return;
+      }
+      await verifyEmailCode(codeEmail, f.code);
       await openAdminSession();
     } catch (loginError) {
       setError(loginError.message || "Administrator sign-in failed.");
@@ -150,16 +155,27 @@ function AdminApp() {
             Sign in with a DataChat account that has the administrator role.
             This portal controls access metadata only.
           </p>
-          <label>
-            Administrator email
-            <input name="email" type="email" required autoComplete="username" />
-          </label>
-          <label>
-            Password
-            <span className="password-field"><input type={showPassword ? "text" : "password"} name="password" required autoComplete="current-password" /><button type="button" aria-label={showPassword ? "Hide password" : "Show password"} onClick={() => setShowPassword((value) => !value)}>{showPassword ? "Hide" : "Show"}</button></span>
-          </label>
+          {/* Distinct keys: otherwise React reuses the email input for the
+              code and it keeps the email address as its value. */}
+          {codeEmail ? (
+            <label key="code">
+              Sign-in code
+              <input name="code" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{8}" maxLength="8" required autoFocus placeholder="Enter 8 digits" />
+              <small>Enter the eight-digit code sent to {codeEmail}.</small>
+            </label>
+          ) : (
+            <label key="email">
+              Administrator email
+              <input name="email" type="email" required autoComplete="username" />
+            </label>
+          )}
           {error && <div className="error">{error}</div>}
-          <button className="primary">Sign in</button>
+          <button className="primary">{codeEmail ? "Sign in" : "Email me a sign-in code"}</button>
+          {codeEmail && (
+            <button type="button" className="secondary" onClick={() => { setCodeEmail(""); setError(""); }}>
+              Use a different email
+            </button>
+          )}
           <a className="secondary admin-back" href="/">
             Return to user app
           </a>
