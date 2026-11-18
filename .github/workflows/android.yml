@@ -67,18 +67,23 @@ jobs:
           set -o pipefail
           chmod +x gradlew
           task=$([ "$HAS_SIGNING_KEY" = "true" ] && echo assembleRelease || echo assembleDebug)
-          if ! ./gradlew --no-daemon --stacktrace "$task" 2>&1 | tee gradle.log; then
-            # Surface the failure as annotations (readable without signing in).
-            grep -E "What went wrong|FAILURE|error:|Error:|Could not|> |Caused by" gradle.log | head -25 | while IFS= read -r line; do
-              echo "::error title=Gradle::${line}"
-            done
+          report() {
+            # Annotations are readable without signing in to GitHub.
+            tail -n 20 gradle.log | sed 's/%/%25/g' | while IFS= read -r line; do echo "::error title=Gradle::${line}"; done
+            find app/build/outputs -type f 2>/dev/null | head -10 | while IFS= read -r f; do echo "::error title=Output::${f}"; done
+          }
+          if ! ./gradlew --no-daemon --stacktrace "$task" > gradle.log 2>&1; then
+            report
             exit 1
           fi
-          if [ "$task" = assembleRelease ]; then
-            cp app/build/outputs/apk/release/app-release.apk ../DataChat.apk
-          else
-            cp app/build/outputs/apk/debug/app-debug.apk ../DataChat.apk
+          apk=$(find app/build/outputs/apk -name '*.apk' | head -n 1)
+          if [ -z "$apk" ]; then
+            echo "::error title=Output::Gradle finished but no APK was found"
+            report
+            exit 1
           fi
+          echo "Built $apk"
+          cp "$apk" ../DataChat.apk
 
       - uses: actions/upload-artifact@v4
         with:
