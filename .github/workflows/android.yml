@@ -64,26 +64,27 @@ jobs:
       - name: Build APK
         working-directory: android
         run: |
-          set -o pipefail
           chmod +x gradlew
           task=$([ "$HAS_SIGNING_KEY" = "true" ] && echo assembleRelease || echo assembleDebug)
-          report() {
-            # Annotations are readable without signing in to GitHub.
-            tail -n 20 gradle.log | sed 's/%/%25/g' | while IFS= read -r line; do echo "::error title=Gradle::${line}"; done
-            find app/build/outputs -type f 2>/dev/null | head -10 | while IFS= read -r f; do echo "::error title=Output::${f}"; done
-          }
-          if ! ./gradlew --no-daemon --stacktrace "$task" > gradle.log 2>&1; then
-            report
-            exit 1
-          fi
-          apk=$(find app/build/outputs/apk -name '*.apk' | head -n 1)
+          ./gradlew --no-daemon --stacktrace "$task" > gradle.log 2>&1 || { tail -n 60 gradle.log; exit 1; }
+          apk=$(find app/build/outputs/apk -name '*.apk' | head -n 1 || true)
           if [ -z "$apk" ]; then
-            echo "::error title=Output::Gradle finished but no APK was found"
-            report
+            echo "Gradle finished but no APK was found" | tee -a gradle.log
             exit 1
           fi
           echo "Built $apk"
           cp "$apk" ../DataChat.apk
+
+      - name: Publish the build log when the build fails
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          log=android/gradle.log
+          [ -f "$log" ] || echo "No Gradle log was written." > "$log"
+          gh release delete android-build-log --yes --cleanup-tag 2>/dev/null || true
+          gh release create android-build-log "$log" --prerelease --target "$GITHUB_SHA" \
+            --title "Android build log (failed build)" --notes "Log of the last failed APK build at ${GITHUB_SHA::7}."
 
       - uses: actions/upload-artifact@v4
         with:
