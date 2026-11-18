@@ -1,9 +1,10 @@
-# Moving DataChat to Cloudflare (step 1: database and email sign-in)
+# Running DataChat on Cloudflare
 
-This replaces Supabase sign-in with email codes sent from your own domain,
-and stores accounts in Cloudflare D1. Data, files and live chat move in later
-steps. Until you switch the app over, the new sign-in runs alongside
-Supabase and nothing changes for current users.
+DataChat runs entirely on your Cloudflare account: a Worker for the app and
+API, D1 for accounts, records, messages and Pro codes, and Email Service for
+sign-in codes sent from your own domain. Supabase is no longer used.
+`npx wrangler d1 migrations apply` creates every table (all files in
+`migrations/`).
 
 ## What you need
 
