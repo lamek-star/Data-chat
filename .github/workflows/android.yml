@@ -67,7 +67,8 @@ jobs:
           chmod +x gradlew
           task=$([ "$HAS_SIGNING_KEY" = "true" ] && echo assembleRelease || echo assembleDebug)
           ./gradlew --no-daemon --stacktrace "$task" > gradle.log 2>&1 || { tail -n 60 gradle.log; exit 1; }
-          apk=$(find app/build/outputs/apk -name '*.apk' | head -n 1 || true)
+          # android/build.gradle moves build output to <tmpdir>/datachat-android-build.
+          apk=$(find app/build/outputs/apk "${TMPDIR:-/tmp}/datachat-android-build/app/outputs/apk" -name '*.apk' 2>/dev/null | head -n 1 || true)
           if [ -z "$apk" ]; then
             echo "Gradle finished but no APK was found" | tee -a gradle.log
             exit 1
