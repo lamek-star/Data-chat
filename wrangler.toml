@@ -15,8 +15,17 @@ STRIPE_PRO_PRICE_ID = "price_1TvkwtHmCwS1qvj6UKa8921s"
 STRIPE_CHECKOUT_MODE = "payment"
 PRO_PLAN_NAME = "DataChat Pro"
 PRO_PLAN_PRICE_LABEL = "Stripe checkout"
-# Public Supabase project values (the same ones the browser app uses).
-SUPABASE_URL = "https://ufneentdbsdmfiwvjthj.supabase.co"
-SUPABASE_ANON_KEY = "sb_publishable_kF_WLO_XatQrqmp_a9Ls2g_IcA6NTgL"
+# Sign-in codes. Email Routing is on for harmongt.uk; until paid Email
+# Service is enabled, codes reach only verified destination addresses.
+AUTH_EMAIL_FROM = "DataChat <no-reply@harmongt.uk>"
 # Secrets: set with `wrangler secret put <NAME>`, never in this file:
-#   STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, SUPABASE_SERVICE_ROLE_KEY
+#   AUTH_SECRET, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET
+
+[[send_email]]
+name = "EMAIL"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "datachat"
+database_id = "73bb0aae-ecdb-43f4-a8d7-8b3a9e4ca151"
+migrations_dir = "migrations"

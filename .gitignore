@@ -22,3 +22,7 @@ ios/App/App/public/
 # Release builds are published on GitHub Releases, not committed.
 *.apk
 *.aab
+
+# Local Worker secrets (wrangler dev)
+.dev.vars
+.wrangler/

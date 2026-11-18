@@ -1,0 +1,299 @@
+// Client for DataChat's own API on Cloudflare (shared/api.js in the Worker).
+// Replaces the Supabase client: same function names, so the app barely
+// changes. Browsers authenticate with an HttpOnly session cookie; the
+// Android/iOS app keeps a session token and sends it as a Bearer header.
+
+const API_BASE = (
+  import.meta.env.VITE_API_BASE_URL ??
+  // In development the Vite /api proxy serves the API on the same origin.
+  (import.meta.env.DEV ? "" : "https://datachat.harmongt.uk")
+).replace(/\/$/, "");
+
+// VITE_DATACHAT_OFFLINE=1 runs the app on browser storage only.
+const offline = import.meta.env.VITE_DATACHAT_OFFLINE === "1";
+export const cloudConfigured = !offline;
+export const cloudConfig = { apiBase: API_BASE };
+
+const TOKEN_KEY = "dc-session-token";
+const isNative = () => Boolean(globalThis.Capacitor?.isNativePlatform?.());
+const storage = {
+  get: () => {
+    try {
+      return localStorage.getItem(TOKEN_KEY);
+    } catch {
+      return null;
+    }
+  },
+  set: (value) => {
+    try {
+      value ? localStorage.setItem(TOKEN_KEY, value) : localStorage.removeItem(TOKEN_KEY);
+    } catch {
+      /* storage unavailable: the cookie still works in browsers */
+    }
+  },
+};
+
+const absolute = (url) => (url && url.startsWith("/api/") ? `${API_BASE}${url}` : url);
+
+async function api(path, { method = "GET", body, raw, contentType } = {}) {
+  const headers = {};
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  if (raw) headers["Content-Type"] = contentType;
+  const token = storage.get();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  let response;
+  try {
+    response = await fetch(`${API_BASE}${path}`, {
+      method,
+      headers,
+      credentials: "include",
+      body: raw ?? (body === undefined ? undefined : JSON.stringify(body)),
+    });
+  } catch {
+    throw Object.assign(new Error("Cannot reach DataChat. Check your connection and try again."), { status: 0 });
+  }
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw Object.assign(new Error(data.error || `Request failed (${response.status}).`), { status: response.status });
+  return data;
+}
+
+// ------------------------------------------------------------------ auth --
+
+let currentUser = null; // the API's view of the signed-in account
+const listeners = new Set();
+const emit = (event) => listeners.forEach((listener) => listener(event, currentUser ? { user: toAuthUser(currentUser) } : null));
+
+// Shape the app expects from the old auth client.
+function toAuthUser(user) {
+  return {
+    id: user.id,
+    email: user.email,
+    created_at: user.createdAt,
+    user_metadata: {
+      name: user.name,
+      username: user.username,
+      phone: user.phone,
+      country: user.country,
+      avatar_url: absolute(user.avatarUrl),
+    },
+  };
+}
+
+async function refreshUser() {
+  const { user } = await api("/api/auth/session");
+  currentUser = user;
+  return user;
+}
+
+export async function getSession() {
+  try {
+    return { user: toAuthUser(await refreshUser()) };
+  } catch (error) {
+    if (error.status === 401) {
+      currentUser = null;
+      return null;
+    }
+    throw error;
+  }
+}
+
+export function onAuthStateChange(callback) {
+  listeners.add(callback);
+  return { unsubscribe: () => listeners.delete(callback) };
+}
+
+/** Emails an 8-digit sign-in code. Works for new and existing accounts. */
+export async function requestEmailCode(email) {
+  await api("/api/auth/email/start", { method: "POST", body: { email } });
+}
+
+/** Checks the code; creates the account on first sign-in from `profile`. */
+export async function verifyEmailCode(email, code, profile) {
+  const result = await api("/api/auth/email/verify", {
+    method: "POST",
+    body: { email, code, profile, client: isNative() ? "native" : undefined },
+  });
+  if (result.token) storage.set(result.token);
+  currentUser = result.user;
+  emit("SIGNED_IN");
+  return { user: toAuthUser(result.user) };
+}
+
+export async function signOut() {
+  try {
+    await api("/api/auth/logout", { method: "POST", body: {} });
+  } finally {
+    storage.set(null);
+    currentUser = null;
+    emit("SIGNED_OUT");
+  }
+  return true;
+}
+
+/** Bearer token for the native app; browsers rely on the session cookie. */
+export async function getAccessToken() {
+  return storage.get();
+}
+
+/** Plan, role and status always come from the server. */
+export async function loadEntitlement() {
+  const user = await refreshUser();
+  return { plan: user.plan, role: user.role, status: user.status };
+}
+
+// ------------------------------------------------------------------ data --
+
+export async function loadAppData() {
+  return (await api("/api/data")).records;
+}
+
+export async function overwriteAppData(_userId, records) {
+  await api("/api/data", { method: "PUT", body: { records } });
+  return true;
+}
+
+// ------------------------------------------------------------- profiles --
+
+const profileRow = (p) => (p ? { ...p, avatar_url: absolute(p.avatar_url) } : p);
+
+/** The signed-in member's own profile (phone included: it is theirs). */
+export async function upsertPublicProfile() {
+  const user = currentUser || (await refreshUser());
+  return {
+    id: user.id,
+    display_name: user.name,
+    username: user.username,
+    contact_code: user.contactCode,
+    country: user.country,
+    phone: user.phone,
+    avatar_url: absolute(user.avatarUrl),
+  };
+}
+
+export async function findPublicProfile({ userId, contactCode }) {
+  const query = userId ? `ids=${encodeURIComponent(userId)}` : `code=${encodeURIComponent(String(contactCode || "").trim())}`;
+  const { profiles } = await api(`/api/profiles?${query}`);
+  return profileRow(profiles[0]) || null;
+}
+
+export async function loadPublicProfiles(userIds) {
+  const ids = [...new Set(userIds || [])];
+  if (!ids.length) return [];
+  const out = [];
+  for (let i = 0; i < ids.length; i += 100) {
+    const { profiles } = await api(`/api/profiles?ids=${ids.slice(i, i + 100).map(encodeURIComponent).join(",")}`);
+    out.push(...profiles.map(profileRow));
+  }
+  return out;
+}
+
+// Phone photos are often several MB; shrink to 512 px JPEG before upload.
+async function shrinkImage(file) {
+  if (typeof createImageBitmap !== "function" || typeof document === "undefined") return file;
+  try {
+    const bitmap = await createImageBitmap(file);
+    const scale = Math.min(1, 512 / Math.max(bitmap.width, bitmap.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(bitmap.width * scale);
+    canvas.height = Math.round(bitmap.height * scale);
+    canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.85));
+    return blob || file;
+  } catch {
+    return file;
+  }
+}
+
+export async function uploadProfilePhoto(_userId, file) {
+  const image = await shrinkImage(file);
+  const { avatarUrl } = await api("/api/profile/photo", { method: "PUT", raw: image, contentType: image.type || "image/jpeg" });
+  if (currentUser) currentUser = { ...currentUser, avatarUrl };
+  return absolute(avatarUrl);
+}
+
+// -------------------------------------------------------------- messages --
+
+let latestMessageMs = 0;
+const track = (rows) => {
+  for (const row of rows) latestMessageMs = Math.max(latestMessageMs, row.created_ms || 0);
+  return rows;
+};
+
+export async function loadDirectMessages() {
+  const all = [];
+  let since = 0;
+  for (;;) {
+    const { messages } = await api(`/api/messages?since=${since}`);
+    all.push(...messages);
+    if (messages.length < 500) break;
+    since = messages.at(-1).created_ms;
+  }
+  return track(all);
+}
+
+export async function sendDirectMessage(recipientId, message) {
+  const { message: row } = await api("/api/messages", { method: "POST", body: { id: message.id, recipientId, payload: message } });
+  track([row]);
+  return row;
+}
+
+/**
+ * Delivers new messages by polling every few seconds while the app is open
+ * and visible. Calls callback({ new: row }) like the old realtime channel.
+ */
+export function subscribeToDirectMessages(callback, intervalMs = 4000) {
+  let stopped = false;
+  let timer;
+  const tick = async () => {
+    if (stopped) return;
+    if (typeof document === "undefined" || document.visibilityState !== "hidden") {
+      try {
+        const { messages } = await api(`/api/messages?since=${latestMessageMs}`);
+        for (const row of track(messages)) callback({ new: row });
+      } catch {
+        /* offline or signed out: try again on the next tick */
+      }
+    }
+    if (!stopped) timer = setTimeout(tick, intervalMs);
+  };
+  timer = setTimeout(tick, intervalMs);
+  return { stop: () => ((stopped = true), clearTimeout(timer)) };
+}
+
+export function unsubscribeChannel(channel) {
+  channel?.stop?.();
+}
+
+// ------------------------------------------------------------------- Pro --
+
+export async function redeemProAccessCode(code) {
+  return api("/api/pro/redeem", { method: "POST", body: { code: String(code || "").trim().toUpperCase() } });
+}
+
+// ----------------------------------------------------------------- admin --
+// The server re-checks the admin role on every call.
+
+export async function isCloudAdmin() {
+  const user = await refreshUser();
+  return user.role === "admin" && user.status === "active";
+}
+
+export async function createCloudAccessCode(code) {
+  return (await api("/api/admin/codes", { method: "POST", body: { code } })).code;
+}
+
+export async function listCloudAccessCodes() {
+  return (await api("/api/admin/codes")).codes;
+}
+
+export async function listCloudMembers() {
+  return (await api("/api/admin/members")).members;
+}
+
+export async function setCloudMemberPlan(userId, plan) {
+  return api("/api/admin/members", { method: "PATCH", body: { userId, plan } });
+}
+
+export async function setCloudMemberStatus(userId, status) {
+  return api("/api/admin/members", { method: "PATCH", body: { userId, status } });
+}

@@ -12,13 +12,8 @@ import {
   cloudConfig,
   getSession,
   onAuthStateChange,
-  signIn as cloudSignIn,
-  signInWithUsername,
-  signUp as cloudSignUp,
-  requestEmailOtp,
-  resendSignupOtp,
-  verifyEmailOtp,
-  updateCurrentUserPassword,
+  requestEmailCode,
+  verifyEmailCode,
   redeemProAccessCode,
   signOut as cloudSignOut,
   loadAppData,
@@ -32,7 +27,7 @@ import {
   uploadProfilePhoto,
   loadEntitlement,
   getAccessToken,
-} from "./cloud/supabaseClient";
+} from "./cloud/cloudClient";
 import * as I from "lucide-react";
 import {
   generateSecurityKey,
@@ -789,11 +784,7 @@ function Auth({ db, save, login }) {
     try {
       setBusy(true);
       setErr("");
-      if (otpStep.mode === "recover") {
-        await requestEmailOtp(otpStep.email, {}, false);
-      } else {
-        await resendSignupOtp(otpStep.email);
-      }
+      await requestEmailCode(otpStep.email);
       setResendIn(60);
     } catch (error) {
       setErr(error.message);
@@ -810,69 +801,27 @@ function Auth({ db, save, login }) {
       try {
         setBusy(true);
         setErr("");
+        // Step 2: check the emailed code. New accounts are created here from
+        // the sign-up details; plan, role and status are set by the server.
         if (otpStep) {
-          const result = await verifyEmailOtp(
-            email,
-            f.get("otp"),
-            otpStep.mode === "recover" ? "email" : "signup",
-          );
-          if (!result?.user) throw new Error("The confirmation code is invalid or expired.");
-          if (otpStep.mode === "recover") {
-            const updated = await updateCurrentUserPassword(
-              otpStep.password,
-              otpStep.username,
-            );
-            if (!updated?.user) throw new Error("The password could not be saved.");
-            const cloudDb = await loadCloudDb(updated.user);
-            login(cloudDb.users[0]);
-            return;
-          }
+          const result = await verifyEmailCode(email, f.get("otp"), otpStep.profile);
           const cloudDb = await loadCloudDb(result.user);
           login(cloudDb.users[0]);
           return;
         }
-        if (mode === "login") {
-          const result = await signInWithUsername(f.get("username"), password);
-          if (!result?.user) throw new Error("Username or password is incorrect.");
-          const cloudDb = await loadCloudDb(result.user);
-          login(cloudDb.users[0]);
-          return;
-        }
-        if (mode === "recover") {
-          if (password.length < 8)
-            throw new Error("Use a password with at least 8 characters.");
-          if (password !== f.get("confirmPassword"))
-            throw new Error("The passwords do not match.");
-          const username = String(f.get("username") || "").trim().toLowerCase();
-          await requestEmailOtp(email, {}, false);
-          setOtpStep({ email, mode: "recover", username, password });
-          setResendIn(60);
-          return;
-        }
+        // Step 1: email a code. Same flow for signing in and signing up.
         if (mode === "register" && f.get("agreement") !== "on")
           throw new Error("You must accept the User Access & Privacy Agreement.");
-        if (password.length < 8)
-          throw new Error("Use a password with at least 8 characters.");
-        if (password !== f.get("confirmPassword"))
-          throw new Error("The passwords do not match.");
-        const metadata = {
-          name: f.get("name").trim(),
-          username: f.get("username").trim().toLowerCase(),
-          phone: f.get("phone").trim(),
-          email,
-          // Plan/role/status live in datachat_entitlements, not metadata.
-          createdAt: new Date().toISOString(),
-        };
-        const result = await cloudSignUp(email, password, metadata);
-        if (result?.session && result?.user?.email_confirmed_at) {
-          const cloudDb = await loadCloudDb(result.user);
-          login(cloudDb.users[0]);
-          return;
-        }
-        setOtpStep({
-          email,
-          mode: "register",
-        });
+        const profile =
+          mode === "register"
+            ? {
+                name: String(f.get("name") || "").trim(),
+                username: String(f.get("username") || "").trim().toLowerCase(),
+                phone: String(f.get("phone") || "").trim(),
+              }
+            : undefined;
+        await requestEmailCode(email);
+        setOtpStep({ email, mode, profile });
         setResendIn(60);
         setErr("");
       } catch (error) {
@@ -1013,11 +962,11 @@ function Auth({ db, save, login }) {
               </label>
             </>
           )}
-          {(mode === "login" || mode === "recover") && !otpStep && <label>
+          {!cloudConfigured && mode === "login" && !otpStep && <label>
             Username
             <input name="username" required autoComplete="username" pattern="[A-Za-z0-9._\-]{3,24}" placeholder={mode === "recover" ? "Choose a username" : "Your username"} />
           </label>}
-          {(mode === "register" || mode === "recover") && !otpStep && <label>
+          {(mode === "register" || (cloudConfigured && mode === "login")) && !otpStep && <label>
             Email address
             <input name="email" type="email" required autoComplete="email" placeholder="you@example.com" />
           </label>}
@@ -1035,11 +984,11 @@ function Auth({ db, save, login }) {
           )}
           {otpStep ? (
             <div className="otp-field-group"><label>
-              Email confirmation code
+              Sign-in code
               <input name="otp" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{8}" minLength="8" maxLength="8" required autoFocus placeholder="Enter 8 digits" />
               <small>Enter the eight-digit code sent to {otpStep.email}.</small>
             </label><button type="button" className="secondary resend-otp" disabled={resendIn > 0 || busy} onClick={resendOtp}><Icon name="RefreshCw" />{resendIn > 0 ? `Resend code in ${resendIn}s` : "Resend code"}</button></div>
-          ) : (
+          ) : cloudConfigured ? null : (
             <>
             <label>
               Password
@@ -1053,7 +1002,7 @@ function Auth({ db, save, login }) {
           )}
           {err && <div className="error">{err}</div>}
           <button className="primary" type="submit" disabled={busy}>
-            {busy ? "Please wait…" : otpStep ? "Confirm and continue" : mode === "login" ? "Sign in" : mode === "recover" ? "Send one-time code" : "Create free account"}
+            {busy ? "Please wait…" : otpStep ? "Confirm and continue" : cloudConfigured ? "Email me a sign-in code" : mode === "login" ? "Sign in" : "Create free account"}
             <Icon name="ArrowRight" />
           </button>
           <button
@@ -1070,19 +1019,6 @@ function Auth({ db, save, login }) {
               ? "First time here? Create an account"
               : "Already have an account? Sign in"}
           </button>
-          {mode === "login" && (
-            <button
-              type="button"
-              className="link"
-              onClick={() => {
-                setMode("recover");
-                setOtpStep(null);
-                setErr("");
-              }}
-            >
-              Existing OTP-only account? Set username and password
-            </button>
-          )}
           {mode === "register" && db.adminConfig?.paymentUrl && false && (
             <a
               className="payment-link"
