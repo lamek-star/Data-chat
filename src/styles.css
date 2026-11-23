@@ -3261,3 +3261,54 @@ dd {
 .seal-chat-button { display: inline-flex; align-items: center; gap: 6px; margin-top: 8px; }
 .trial-active { border-color: #d7a62b55; }
 .trial-active svg { color: var(--gold2); }
+
+/* ===== Feel layer: responsive taps, smooth states, gentle motion ===== */
+:root { --ease-out: cubic-bezier(0.22, 1, 0.36, 1); --fast: 140ms; --base: 220ms; }
+html { -webkit-text-size-adjust: 100%; }
+body { overscroll-behavior-y: none; }
+a, button, label, select, summary, [role="button"], .primary, .secondary, .icon-btn {
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation; /* no 300 ms double-tap delay */
+}
+button, .primary, .secondary, .icon-btn, .link, .mobile-nav button, aside button, nav button, .chip, .badge, .file {
+  transition: background-color var(--fast) var(--ease-out), border-color var(--fast) var(--ease-out),
+    color var(--fast) var(--ease-out), box-shadow var(--base) var(--ease-out), transform var(--fast) var(--ease-out),
+    filter var(--fast) var(--ease-out), opacity var(--fast) var(--ease-out);
+}
+button:not(:disabled):active, .primary:not(:disabled):active, .secondary:not(:disabled):active, .icon-btn:active, label.file:active {
+  transform: scale(0.97);
+}
+.primary { box-shadow: 0 6px 18px -10px #f1c34f99; }
+.primary:not(:disabled):active { filter: brightness(0.96); box-shadow: 0 2px 8px -6px #f1c34f99; }
+button:disabled, .primary:disabled, .secondary:disabled { opacity: 0.55; cursor: not-allowed; }
+@media (hover: hover) and (pointer: fine) {
+  .primary:not(:disabled):hover { transform: translateY(-1px); box-shadow: 0 10px 22px -12px #f1c34fb3; }
+  .secondary:not(:disabled):hover { transform: translateY(-1px); }
+  .icon-btn:hover { background: #19263a; }
+}
+input, select, textarea {
+  transition: border-color var(--fast) var(--ease-out), box-shadow var(--base) var(--ease-out), background-color var(--fast) var(--ease-out);
+}
+input:hover:not(:focus), select:hover:not(:focus), textarea:hover:not(:focus) { border-color: #33476a; }
+input:focus, select:focus, textarea:focus { outline: none; border-color: var(--gold); box-shadow: 0 0 0 3px #d7a62b2e; background: #0b182b; }
+input::placeholder, textarea::placeholder { color: #5f7089; }
+.panel, .card, .stat, .modal { transition: border-color var(--base) var(--ease-out), box-shadow var(--base) var(--ease-out); }
+/* Screens and pop-ups arrive instead of jumping in. */
+@keyframes dc-rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes dc-toast { from { opacity: 0; transform: translate(-50%, 12px) scale(0.98); } to { opacity: 1; transform: translate(-50%, 0) scale(1); } }
+.page, .auth-card, .seal-opened, .seal-locked { animation: dc-rise var(--base) var(--ease-out) both; }
+.error { animation: dc-rise 180ms var(--ease-out) both; }
+/* Phones: lighter sign-in screen, no zoom on focus, comfortable spacing. */
+@media (max-width: 780px) {
+  input, select, textarea { font-size: 16px; } /* iOS zooms in below 16px */
+  .welcome-access .auth-card { padding: 8px 2px 16px; }
+  .welcome-access .auth-card h2 { font-size: clamp(22px, 6.4vw, 26px); line-height: 1.2; margin-bottom: 6px; }
+  .welcome-access .auth-card > p:not(.eyebrow) { font-size: 14.5px; line-height: 1.5; }
+  .auth-card label { gap: 6px; }
+  .auth-card .primary { min-height: 50px; border-radius: 12px; font-size: 16px; }
+  .primary, .secondary { border-radius: 11px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+  button:active, .primary:active, .secondary:active { transform: none !important; }
+}
