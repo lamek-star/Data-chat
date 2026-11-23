@@ -94,7 +94,8 @@ describe("verifying a code", () => {
     const r = await signIn("ana@example.test", { profile: { name: "Ana", username: "Ana_1", phone: "+251900000001" } });
     expect(r.status).toBe(200);
     const body = await r.json();
-    expect(body.user).toMatchObject({ email: "ana@example.test", name: "Ana", username: "ana_1", plan: "Free", role: "user", status: "active" });
+    // New accounts start on the 3-month Pro trial.
+    expect(body.user).toMatchObject({ email: "ana@example.test", name: "Ana", username: "ana_1", plan: "Pro", trial: true, role: "user", status: "active" });
     expect(body.token).toBeUndefined();
     const cookie = r.headers.get("Set-Cookie");
     expect(cookie).toMatch(/^dc_session=[A-Za-z0-9_-]{40,};/);
@@ -108,7 +109,9 @@ describe("verifying a code", () => {
 
   it("never lets the sign-up form set plan, role or status", async () => {
     const body = await (await signIn("eve@example.test", { profile: { plan: "Pro", role: "admin", status: "active" } })).json();
-    expect(body.user).toMatchObject({ plan: "Free", role: "user" });
+    // Only the server's trial applies; the form cannot make anyone permanent Pro or admin.
+    expect(body.user).toMatchObject({ plan: "Pro", trial: true, role: "user" });
+    expect(env.DB.raw.prepare("SELECT plan FROM users WHERE email = 'eve@example.test'").get().plan).toBe("Free");
   });
 
   it("signs an existing account back in without creating a second one", async () => {

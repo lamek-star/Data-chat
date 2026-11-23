@@ -41,6 +41,16 @@ import {
   updateProfile,
 } from "./data.js";
 import { requestLocation } from "./email.js";
+import {
+  createSeal,
+  listPasskeys,
+  listSeals,
+  openSeal,
+  openSealOptions,
+  passkeyRegistrationOptions,
+  removePasskey,
+  verifyPasskeyRegistration,
+} from "./passkeys.js";
 
 const DEFAULT_APP_URL = "https://datachat.harmongt.uk";
 const MAX_JSON_BYTES = 9_000_000;
@@ -136,6 +146,15 @@ async function memberRoutes(request, env, url, user) {
   if (pathname === "/api/admin/members" && m === "PATCH") return json(request, env, await adminSetMember(env, user, await readJson(request)));
   if (pathname === "/api/admin/codes" && m === "GET") return json(request, env, { codes: await adminListCodes(env, user) });
   if (pathname === "/api/admin/codes" && m === "POST") return json(request, env, { code: await adminCreateCode(env, user, (await readJson(request)).code) });
+  // Passkeys (fingerprint / face unlock) and sealed transfers.
+  if (pathname === "/api/passkeys" && m === "GET") return json(request, env, { passkeys: await listPasskeys(env, user) });
+  if (pathname === "/api/passkeys/register/options" && m === "POST") return json(request, env, await passkeyRegistrationOptions(env, user));
+  if (pathname === "/api/passkeys/register/verify" && m === "POST") return json(request, env, await verifyPasskeyRegistration(env, user, await readJson(request)));
+  if (pathname === "/api/passkeys/remove" && m === "POST") return json(request, env, await removePasskey(env, user, (await readJson(request)).id));
+  if (pathname === "/api/sealed" && m === "POST") return json(request, env, await createSeal(env, user, await readJson(request)));
+  if (pathname === "/api/sealed" && m === "GET") return json(request, env, { seals: await listSeals(env, user, url.searchParams.get("box")) });
+  if (pathname === "/api/sealed/open/options" && m === "POST") return json(request, env, await openSealOptions(env, user, await readJson(request)));
+  if (pathname === "/api/sealed/open" && m === "POST") return json(request, env, await openSeal(env, user, await readJson(request)));
   return null;
 }
 
@@ -239,7 +258,7 @@ export async function handleApi(request, env, deps = {}) {
       return json(request, env, { url: session.url });
     }
 
-    const known = /^\/api\/(data|profiles?|profile\/photo|messages(\/read)?|pro\/redeem|admin\/(members|codes))$/.test(url.pathname);
+    const known = /^\/api\/(data|profiles?|profile\/photo|messages(\/read)?|pro\/redeem|admin\/(members|codes)|passkeys(\/register\/(options|verify)|\/remove)?|sealed(\/open(\/options)?)?)$/.test(url.pathname);
     if (known) {
       if (!user) return json(request, env, { error: "Sign in to continue." }, 401);
       const response = await memberRoutes(request, env, url, user);
@@ -249,7 +268,8 @@ export async function handleApi(request, env, deps = {}) {
 
     return json(request, env, { error: "API route not found." }, 404);
   } catch (error) {
-    if (error instanceof AuthError || error instanceof ApiError) return json(request, env, { error: error.message }, error.status);
+    if (error instanceof AuthError || error instanceof ApiError)
+      return json(request, env, { error: error.message, ...(error.reason ? { reason: error.reason } : {}) }, error.status);
     console.error("DataChat API error", url.pathname, error.message);
     return json(request, env, { error: "The server could not complete this request." }, 500);
   }

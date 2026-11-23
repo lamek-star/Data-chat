@@ -4,6 +4,8 @@
 // see. This replaces Supabase row-level security, so tests/unit/data.test.js
 // covers each rule.
 
+import { effectivePlan } from "./auth.js";
+
 export class ApiError extends Error {
   constructor(status, message) {
     super(message);
@@ -249,9 +251,12 @@ const codeJson = (row) => ({
 export async function adminListMembers(env, user) {
   requireAdmin(user);
   const { results } = await env.DB.prepare(
-    "SELECT id, display_name, username, email, plan, role, status, created_at FROM users ORDER BY created_at DESC",
+    "SELECT id, display_name, username, email, plan, pro_until, role, status, created_at FROM users ORDER BY created_at DESC",
   ).all();
-  return results.map((r) => ({ id: r.id, name: r.display_name, username: r.username, email: r.email, plan: r.plan, role: r.role, status: r.status, createdAt: r.created_at }));
+  return results.map((r) => {
+    const { plan, trial, proUntil } = effectivePlan(r);
+    return { id: r.id, name: r.display_name, username: r.username, email: r.email, plan, trial, proUntil: proUntil ? new Date(proUntil).toISOString() : null, role: r.role, status: r.status, createdAt: r.created_at };
+  });
 }
 
 export async function adminSetMember(env, user, { userId, plan, status }) {
@@ -260,9 +265,10 @@ export async function adminSetMember(env, user, { userId, plan, status }) {
   if (plan !== undefined && !["Free", "Pro"].includes(plan)) throw new ApiError(400, "Unknown plan.");
   if (status !== undefined && !["active", "suspended"].includes(status)) throw new ApiError(400, "Unknown status.");
   if (status !== undefined && userId === user.id) throw new ApiError(400, "You cannot change your own status.");
+  // Setting Free also ends a running trial, so "Free" really means Free.
   const result = await env.DB.prepare(
-    "UPDATE users SET plan = COALESCE(?, plan), status = COALESCE(?, status) WHERE id = ?",
-  ).bind(plan ?? null, status ?? null, userId).run();
+    "UPDATE users SET plan = COALESCE(?, plan), status = COALESCE(?, status), pro_until = CASE WHEN ? = 'Free' THEN NULL ELSE pro_until END WHERE id = ?",
+  ).bind(plan ?? null, status ?? null, plan ?? null, userId).run();
   if (!result.meta?.changes) throw new ApiError(404, "Unknown user.");
   // A suspended member is signed out everywhere at once.
   if (status === "suspended") await env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(userId).run();

@@ -18,6 +18,7 @@ import { sendSmtp } from "./smtp.js";
 
 const CODE_TTL_MS = 10 * 60 * 1000;
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+export const TRIAL_MS = 90 * 24 * 60 * 60 * 1000; // free Pro for new members
 const MAX_CODE_ATTEMPTS = 5;
 const SESSION_COOKIE = "dc_session";
 const EMAIL_RE = /^[^\s@]{1,64}@[^\s@]{1,190}\.[^\s@]{2,63}$/;
@@ -160,7 +161,7 @@ function newContactCode() {
 
 const cleanText = (value, max) => String(value ?? "").replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, max);
 
-async function findOrCreateUser(env, email, profile = {}) {
+async function findOrCreateUser(env, email, profile = {}, now = Date.now()) {
   const existing = await env.DB.prepare("SELECT * FROM users WHERE email = ?").bind(email).first();
   if (existing) return existing;
   const username = cleanText(profile.username, 24).toLowerCase();
@@ -175,8 +176,8 @@ async function findOrCreateUser(env, email, profile = {}) {
   };
   try {
     await env.DB.prepare(
-      "INSERT INTO users (id, email, username, display_name, phone, country, contact_code) VALUES (?, ?, ?, ?, ?, ?, ?)",
-    ).bind(user.id, user.email, user.username, user.display_name, user.phone, user.country, user.contact_code).run();
+      "INSERT INTO users (id, email, username, display_name, phone, country, contact_code, pro_until) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    ).bind(user.id, user.email, user.username, user.display_name, user.phone, user.country, user.contact_code, now + TRIAL_MS).run();
   } catch (error) {
     if (/UNIQUE/i.test(error.message) && /username/i.test(error.message))
       throw new AuthError(409, "That username is taken. Choose another one.");
@@ -185,21 +186,36 @@ async function findOrCreateUser(env, email, profile = {}) {
   return env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(user.id).first();
 }
 
+/**
+ * The plan a member actually has right now: permanent Pro (paid, cash code,
+ * admin) or Pro during the free trial; otherwise Free.
+ */
+export function effectivePlan(row, now = Date.now()) {
+  if (row.plan === "Pro") return { plan: "Pro", trial: false, proUntil: null };
+  const until = Number(row.pro_until) || 0;
+  return until > now ? { plan: "Pro", trial: true, proUntil: until } : { plan: "Free", trial: false, proUntil: until || null };
+}
+
 /** What the client may see about the signed-in account. */
-export const publicUser = (row) => ({
-  id: row.id,
-  email: row.email,
-  username: row.username,
-  name: row.display_name,
-  phone: row.phone,
-  country: row.country,
-  contactCode: row.contact_code,
-  avatarUrl: row.avatar_url ?? null,
-  plan: row.plan,
-  role: row.role,
-  status: row.status,
-  createdAt: row.created_at,
-});
+export const publicUser = (row, now = Date.now()) => {
+  const { plan, trial, proUntil } = effectivePlan(row, now);
+  return {
+    id: row.id,
+    email: row.email,
+    username: row.username,
+    name: row.display_name,
+    phone: row.phone,
+    country: row.country,
+    contactCode: row.contact_code,
+    avatarUrl: row.avatar_url ?? null,
+    plan,
+    trial,
+    proUntil: proUntil ? new Date(proUntil).toISOString() : null,
+    role: row.role,
+    status: row.status,
+    createdAt: row.created_at,
+  };
+};
 
 /** Step 2: check the code and open a session. Creates the account on first sign-in. */
 export async function verifyEmailLogin(env, { email: rawEmail, code: rawCode, profile, ip = "unknown" }, now = Date.now()) {
@@ -223,7 +239,7 @@ export async function verifyEmailLogin(env, { email: rawEmail, code: rawCode, pr
   const consumed = await env.DB.prepare("DELETE FROM login_codes WHERE email = ? AND code_hash = ?").bind(email, pending.code_hash).run();
   if (!consumed.meta?.changes) throw wrong;
 
-  const user = await findOrCreateUser(env, email, profile);
+  const user = await findOrCreateUser(env, email, profile, now);
   if (user.status === "suspended") throw new AuthError(403, "This account is suspended. Contact support.");
   const token = base64url(crypto.getRandomValues(new Uint8Array(32)));
   await env.DB.prepare(
