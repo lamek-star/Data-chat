@@ -1,1 +1,13 @@
-{"appId":"com.lamekstar.datachat","appName":"DataChat","webDir":"dist","backgroundColor":"#07101f","server":{"androidScheme":"https"},"ios":{"contentInset":"automatic"},"android":{"allowMixedContent":false}}
+{
+  "appId": "com.lamekstar.datachat",
+  "appName": "DataChat",
+  "webDir": "dist",
+  "backgroundColor": "#07101f",
+  "server": {
+    "url": "https://datachat.harmongt.uk",
+    "androidScheme": "https",
+    "allowNavigation": ["datachat.harmongt.uk"]
+  },
+  "ios": { "contentInset": "automatic" },
+  "android": { "allowMixedContent": false }
+}

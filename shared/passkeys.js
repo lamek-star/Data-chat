@@ -15,6 +15,7 @@ import {
 } from "@simplewebauthn/server";
 import { isoBase64URL } from "@simplewebauthn/server/helpers";
 import { ApiError } from "./data.js";
+import { apkKeyHash, parseFingerprints } from "./assetlinks.js";
 
 const CHALLENGE_TTL_MS = 5 * 60 * 1000;
 const MAX_PASSKEYS = 10;
@@ -30,8 +31,10 @@ export function webauthnConfig(env) {
   const appUrl = new URL(env.APP_URL || "https://datachat.harmongt.uk");
   const origins = new Set([appUrl.origin]);
   for (const origin of String(env.WEBAUTHN_ORIGINS || "").split(",").map((o) => o.trim()).filter(Boolean)) origins.add(origin);
-  // Passkeys created inside the Android app report the app's signing key hash.
+  // Passkeys created natively by the Android app report the app's signing
+  // key hash, derived from the same fingerprint used for assetlinks.json.
   if (env.ANDROID_APK_KEY_HASH) origins.add(`android:apk-key-hash:${env.ANDROID_APK_KEY_HASH}`);
+  for (const fingerprint of parseFingerprints(env.ANDROID_SIGNING_SHA256)) origins.add(`android:apk-key-hash:${apkKeyHash(fingerprint)}`);
   return { rpID: env.WEBAUTHN_RP_ID || appUrl.hostname, rpName: "DataChat", origins: [...origins] };
 }
 

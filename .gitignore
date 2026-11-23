@@ -26,3 +26,9 @@ ios/App/App/public/
 # Local Worker secrets (wrangler dev)
 .dev.vars
 .wrangler/
+
+# Android signing keys (keep private, never commit)
+android-keys/
+*.jks
+*.keystore
+android/keystore.properties

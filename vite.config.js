@@ -4,7 +4,11 @@ import { resolve } from "node:path";
 
 export default defineConfig({
   plugins: [react()],
-  server: { proxy: { "/api": "http://localhost:4242" } },
+  server: {
+    proxy: { "/api": "http://localhost:4242" },
+    // wrangler dev writes local emails and D1 files here; don't reload on them.
+    watch: { ignored: ["**/.wrangler/**"] },
+  },
   build: {
     rollupOptions: {
       input: {
