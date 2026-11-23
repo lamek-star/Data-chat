@@ -14,6 +14,7 @@
 //   DEV_LOG_EMAIL_CODES=1  local development only: log codes instead of sending
 
 import { loginCodeEmail } from "./email.js";
+import { sendSmtp } from "./smtp.js";
 
 const CODE_TTL_MS = 10 * 60 * 1000;
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -89,6 +90,29 @@ async function allow(env, key, [limit, windowMs], now) {
 }
 
 async function sendCodeEmail(env, email, code, location) {
+  // Preferred: the owner's Gmail account (App Password), which can email anyone.
+  if (env.GMAIL_USER && env.GMAIL_APP_PASSWORD) {
+    const message = loginCodeEmail({ code, appUrl: env.APP_URL, location, minutes: CODE_TTL_MS / 60000 });
+    try {
+      await sendSmtp({
+        connect: env.SMTP_CONNECT,
+        username: String(env.GMAIL_USER).trim(),
+        password: String(env.GMAIL_APP_PASSWORD).replace(/\s+/g, ""), // Google shows it in groups of 4
+        to: email,
+        ...message,
+      });
+      return;
+    } catch (error) {
+      console.error("Gmail login email failed", error.code, error.message);
+      if (error.code === 534 || error.code === 535)
+        throw new AuthError(503, "The sign-in email could not be sent (mail account setup). Contact support.");
+      if (/5\.4\.5|limit/i.test(error.message))
+        throw new AuthError(429, "Too many emails today. Try again later.");
+      if (error.code === 550 || error.code === 553)
+        throw new AuthError(400, "That email address doesn't seem to exist. Check it and try again.");
+      throw new AuthError(503, "The sign-in email could not be sent. Try again shortly.");
+    }
+  }
   if (env.EMAIL) {
     const message = loginCodeEmail({ code, appUrl: env.APP_URL, location, minutes: CODE_TTL_MS / 60000 });
     try {

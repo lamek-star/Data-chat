@@ -160,7 +160,7 @@ export async function handleApi(request, env, deps = {}) {
         app: "DataChat",
         stripeConfigured: checkoutConfigured,
         accountsConfigured: Boolean(env.DB && env.AUTH_SECRET),
-        emailConfigured: Boolean(env.EMAIL && env.AUTH_EMAIL_FROM),
+        emailConfigured: Boolean((env.GMAIL_USER && env.GMAIL_APP_PASSWORD) || (env.EMAIL && env.AUTH_EMAIL_FROM)),
       });
 
     // Writes must be JSON (blocks cross-site form posts) except the photo
