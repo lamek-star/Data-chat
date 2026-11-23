@@ -138,7 +138,7 @@ export async function getAccessToken() {
 /** Plan, role and status always come from the server. */
 export async function loadEntitlement() {
   const user = await refreshUser();
-  return { plan: user.plan, role: user.role, status: user.status };
+  return { plan: user.plan, role: user.role, status: user.status, trial: Boolean(user.trial), proUntil: user.proUntil || null };
 }
 
 // ------------------------------------------------------------------ data --
@@ -297,3 +297,75 @@ export async function setCloudMemberPlan(userId, plan) {
 export async function setCloudMemberStatus(userId, status) {
   return api("/api/admin/members", { method: "PATCH", body: { userId, status } });
 }
+
+// ------------------------------------------- passkeys (fingerprint unlock) --
+// The browser shows the system fingerprint / face / PIN prompt; the server
+// verifies the result. Nothing biometric ever leaves the device.
+
+export async function passkeySupport() {
+  const { browserSupportsWebAuthn, platformAuthenticatorIsAvailable } = await import("@simplewebauthn/browser");
+  if (!browserSupportsWebAuthn()) return { supported: false, reason: "This browser does not support fingerprint or face unlock." };
+  const platform = await platformAuthenticatorIsAvailable().catch(() => false);
+  return platform
+    ? { supported: true }
+    : { supported: false, reason: "This device has no fingerprint, face or PIN unlock set up." };
+}
+
+export async function listPasskeys() {
+  return (await api("/api/passkeys")).passkeys;
+}
+
+export async function registerPasskey(deviceName) {
+  const { startRegistration } = await import("@simplewebauthn/browser");
+  const optionsJSON = await api("/api/passkeys/register/options", { method: "POST", body: {} });
+  let response;
+  try {
+    response = await startRegistration({ optionsJSON });
+  } catch (error) {
+    throw new Error(error.name === "NotAllowedError" ? "Fingerprint setup was cancelled." : error.message);
+  }
+  return api("/api/passkeys/register/verify", { method: "POST", body: { response, deviceName } });
+}
+
+export async function removePasskey(id) {
+  return api("/api/passkeys/remove", { method: "POST", body: { id } });
+}
+
+// --------------------------------------------------- sealed transfers --
+
+/** Locks transfer details to one receiver; returns { id, code, recipientName }. */
+export async function createSealedTransfer(recipientId, details) {
+  return api("/api/sealed", { method: "POST", body: { recipientId, details } });
+}
+
+export async function listSealedTransfers(box = "received") {
+  return (await api(`/api/sealed?box=${box === "sent" ? "sent" : "received"}`)).seals;
+}
+
+/**
+ * Asks for the receiver's fingerprint and returns the transfer details.
+ * Throws an error with .reason === "NO_PASSKEY" when unlock isn't set up yet.
+ */
+export async function openSealedTransfer(code) {
+  const { startAuthentication } = await import("@simplewebauthn/browser");
+  let optionsJSON;
+  try {
+    optionsJSON = await api("/api/sealed/open/options", { method: "POST", body: { code } });
+  } catch (error) {
+    if (error.status === 409) error.reason = "NO_PASSKEY";
+    throw error;
+  }
+  let response;
+  try {
+    response = await startAuthentication({ optionsJSON });
+  } catch (error) {
+    throw new Error(error.name === "NotAllowedError" ? "Fingerprint check was cancelled." : error.message);
+  }
+  return api("/api/sealed/open", { method: "POST", body: { code, response } });
+}
+
+/** The link a sender's QR code holds; opening it starts the unlock. */
+export const sealLink = (code) => {
+  const base = API_BASE || (typeof location !== "undefined" ? location.origin : "https://datachat.harmongt.uk");
+  return `${base}/?seal=${encodeURIComponent(code)}`;
+};

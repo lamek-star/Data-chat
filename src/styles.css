@@ -3229,3 +3229,35 @@ dd {
     padding-block: 12px;
   }
 }
+
+/* ---- Fingerprint unlock and locked (sealed) transfers ---- */
+.passkey-panel h3 { display: flex; align-items: center; gap: 8px; margin: 0; }
+.passkey-panel > .primary { margin-top: 12px; }
+.passkey-list { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 8px; }
+.passkey-list li { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--card2); }
+.passkey-list li span { flex: 1; display: grid; gap: 2px; }
+.passkey-list li small { color: var(--muted); }
+.locked-share { display: grid; gap: 12px; padding-bottom: 16px; margin-bottom: 16px; border-bottom: 1px solid var(--border); }
+.locked-share .muted { display: flex; align-items: center; gap: 6px; }
+.locked-result { display: grid; gap: 10px; justify-items: start; }
+.locked-result img { width: 220px; max-width: 100%; border-radius: 12px; background: #fff; padding: 8px; }
+.locked-result p { display: flex; align-items: center; gap: 6px; margin: 0; color: var(--muted); }
+.seal-locked { display: grid; justify-items: center; text-align: center; gap: 14px; padding: 12px 4px 4px; }
+.seal-locked p { margin: 0; color: var(--muted); max-width: 360px; line-height: 1.5; }
+.seal-icon { display: grid; place-items: center; width: 84px; height: 84px; border-radius: 50%; color: var(--gold2); background: radial-gradient(circle, #d7a62b2e, transparent 70%); border: 1px solid #d7a62b55; }
+.seal-opened { display: grid; gap: 14px; }
+.seal-badge { display: flex; align-items: center; gap: 8px; margin: 0; padding: 10px 12px; border-radius: 12px; color: var(--green); background: #45b6871a; border: 1px solid #45b68744; }
+.seal-opened dl { display: grid; gap: 8px; margin: 0; }
+.seal-opened dl div { display: flex; justify-content: space-between; gap: 16px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
+.seal-opened dt { color: var(--muted); }
+.seal-opened dd { margin: 0; font-weight: 600; text-align: right; overflow-wrap: anywhere; }
+.seal-claim { display: grid; gap: 8px; padding: 14px; border-radius: 12px; background: var(--card2); border: 1px solid var(--border); }
+.seal-claim small { color: var(--muted); }
+.seal-claim code { font-family: "Fira Code", monospace; font-size: 15px; color: var(--gold2); overflow-wrap: anywhere; }
+.sealed-inbox { margin-top: 8px; display: grid; gap: 8px; }
+.sealed-inbox h4 { margin: 0; }
+.sealed-inbox ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.sealed-inbox li { display: flex; align-items: center; gap: 6px; color: var(--muted); }
+.seal-chat-button { display: inline-flex; align-items: center; gap: 6px; margin-top: 8px; }
+.trial-active { border-color: #d7a62b55; }
+.trial-active svg { color: var(--gold2); }

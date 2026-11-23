@@ -30,6 +30,15 @@ import {
 } from "./cloud/cloudClient";
 import * as I from "lucide-react";
 import {
+  LockedShareSection,
+  OPEN_SEAL_EVENT,
+  OpenSealDialog,
+  PasskeyPanel,
+  SealOpenModal,
+  extractSealCode,
+  requestOpenSeal,
+} from "./SealedTransfers";
+import {
   generateSecurityKey,
   generateTransactionId,
   isValidSecurityKey,
@@ -322,6 +331,8 @@ async function loadCloudDb(authUser) {
     plan: entitlement.plan,
     role: entitlement.role,
     status: entitlement.status,
+    trial: entitlement.trial,
+    proUntil: entitlement.proUntil,
     createdAt: authUser.user_metadata?.createdAt || authUser.created_at,
   });
   cloudDb.users[0] = {
@@ -534,7 +545,15 @@ function App() {
     [cloudAuthUser, setCloudAuthUser] = useState(null),
     [page, setPage] = useState("home"),
     [toast, setToast] = useState(""),
-    [onboarding, setOnboarding] = useState(false);
+    [onboarding, setOnboarding] = useState(false),
+    [sealCode, setSealCode] = useState(() => extractSealCode(window.location.href));
+
+  // Locked transfers open from a scanned link (?seal=...), the scanner or chat.
+  useEffect(() => {
+    const onOpen = (event) => setSealCode(event.detail);
+    window.addEventListener(OPEN_SEAL_EVENT, onOpen);
+    return () => window.removeEventListener(OPEN_SEAL_EVENT, onOpen);
+  }, []);
 
   useEffect(() => {
     if (!cloudConfigured) localStorage.setItem(K, JSON.stringify(db));
@@ -729,6 +748,17 @@ function App() {
           close={() => {
             localStorage.setItem(`dc-onboarded-${user.id}`, "true");
             setOnboarding(false);
+          }}
+        />
+      )}
+      {sealCode && cloudConfigured && (
+        <SealOpenModal
+          code={sealCode}
+          setToast={setToast}
+          close={() => {
+            setSealCode("");
+            if (new URLSearchParams(window.location.search).has("seal"))
+              window.history.replaceState({}, "", window.location.pathname);
           }}
         />
       )}
@@ -2572,6 +2602,11 @@ function Home({ db, save, user, setToast, setPage }) {
                 ) : (
                   <div key={m.id} className={"bubble " + m.sender}>
                     {m.voiceUrl ? <audio className="voice-message" controls preload="metadata" src={m.voiceUrl}>Voice message</audio> : m.content}
+                    {m.sealCode && m.sender === "them" && (
+                      <button className="secondary seal-chat-button" onClick={() => requestOpenSeal(m.sealCode)}>
+                        <Icon name="Fingerprint" size={16} /> Open with fingerprint
+                      </button>
+                    )}
                     <small>{m.time}{m.sender === "me" && m.deliveryStatus ? ` · ${m.deliveryStatus}` : ""}</small>
                   </div>
                 ),
@@ -3043,7 +3078,8 @@ function Records({ db, save, user, setToast }) {
     [edit, setEdit] = useState(null),
     [review, setReview] = useState(false),
     [handoff, setHandoff] = useState(null),
-    [sharing, setSharing] = useState(null);
+    [sharing, setSharing] = useState(null),
+    [openingSeal, setOpeningSeal] = useState(false);
   const rows = all.filter(
     (r) =>
       (r.id + r.sender + r.receiver + r.account)
@@ -3127,6 +3163,12 @@ function Records({ db, save, user, setToast }) {
               <Icon name="Download" />
               Export
             </button>
+            {cloudConfigured && (
+              <button className="secondary" onClick={() => setOpeningSeal(true)}>
+                <Icon name="LockKeyholeOpen" />
+                Open locked transfer
+              </button>
+            )}
             <button className="primary" onClick={() => setEdit({})}>
               <Icon name="Plus" />
               New record
@@ -3134,6 +3176,7 @@ function Records({ db, save, user, setToast }) {
           </>
         }
       />
+      {openingSeal && <OpenSealDialog close={() => setOpeningSeal(false)} setToast={setToast} />}
       <Stats records={all} />
       <div className="toolbar">
         <div className="search">
@@ -3557,6 +3600,26 @@ function ShareRecordModal({ record, db, save, user, close, setToast }) {
         setToast("Sharing failed; use Copy text or Download instead");
     }
   };
+  // Sends the locked code in chat; only the receiver can open it.
+  const sendLocked = async (contact, code) => {
+    const message = {
+      id: crypto.randomUUID(),
+      owner: user.id,
+      contact: contact.id,
+      sender: "me",
+      content: `Locked transfer ${record.id}. Only you can open it, with your fingerprint.`,
+      sealCode: code,
+      time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+    };
+    save((d) => ({ ...d, messages: [...d.messages, message] }));
+    try {
+      await sendDirectMessage(contact.remoteUserId, message);
+      setToast(`Locked transfer sent to ${contact.name}`);
+      close();
+    } catch (error) {
+      setToast(`Sending failed: ${error.message}`);
+    }
+  };
   const sendToContact = () => {
     const contact = db.contacts.find(
       (x) => x.id === contactId && x.owner === user.id,
@@ -3598,12 +3661,21 @@ function ShareRecordModal({ record, db, save, user, close, setToast }) {
           </div>
         </div>
         <div className="share-copy">
+          {cloudConfigured && (
+            <LockedShareSection
+              reference={record.id}
+              details={{ ...data, claimCode: buildClaimCode(record) }}
+              contacts={db.contacts.filter((x) => x.owner === user.id && !x.blocked)}
+              onSendInChat={sendLocked}
+              setToast={setToast}
+            />
+          )}
           <div className="premium-note">
             <Icon name="ShieldCheck" />
             <div>
-              <b>Confirm before cash release</b>
+              <b>Plain QR and text</b>
               <small>
-                The receiver name and security key are included in both formats.
+                Anyone who sees the QR or text below can read every detail, including the security key. Use a locked QR for sensitive transfers.
               </small>
             </div>
           </div>
@@ -4860,6 +4932,7 @@ function Settings({ db, save, user, logout, setToast, onPlanChanged }) {
             <span className="badge completed">Active</span>
           </Setting>
         </section>
+        {cloudConfigured && <PasskeyPanel setToast={setToast} />}
         {user.role !== "admin" && (
           <BackupPanel db={db} save={save} user={user} setToast={setToast} />
         )}
@@ -4884,7 +4957,19 @@ function Settings({ db, save, user, logout, setToast, onPlanChanged }) {
               Advanced analytics and exports
             </li>
           </ul>
-          {user.plan === "Pro" ? (
+          {user.trial && user.proUntil && (
+            <div className="billing-active trial-active" role="status">
+              <Icon name="Gift" />
+              <span>
+                <b>Free Pro trial</b>
+                <small>
+                  All Pro features are unlocked until {new Date(user.proUntil).toLocaleDateString([], { dateStyle: "long" })}
+                  {` (${Math.max(0, Math.ceil((new Date(user.proUntil) - Date.now()) / 86400000))} days left)`}. Upgrade below to keep Pro after that.
+                </small>
+              </span>
+            </div>
+          )}
+          {user.plan === "Pro" && !user.trial ? (
             <div className="billing-active" role="status">
               <Icon name="BadgeCheck" />
               <span><b>Pro is active</b><small>Your premium features are unlocked.</small></span>
