@@ -18,6 +18,9 @@ PRO_PLAN_PRICE_LABEL = "Stripe checkout"
 # Sign-in codes. Email Routing is on for harmongt.uk; until paid Email
 # Service is enabled, codes reach only verified destination addresses.
 AUTH_EMAIL_FROM = "DataChat <no-reply@harmongt.uk>"
+# Public SHA-256 fingerprint of the Android release signing key (not a
+# secret). Publishes /.well-known/assetlinks.json so the app can use passkeys.
+ANDROID_SIGNING_SHA256 = "E1:83:83:9A:71:A5:F1:1B:50:A8:ED:E1:C0:27:5D:E8:4B:9D:B6:B4:16:08:4D:DC:0B:5A:3D:75:9D:07:08:8D"
 # Secrets: set with `wrangler secret put <NAME>`, never in this file:
 #   AUTH_SECRET, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET
 
