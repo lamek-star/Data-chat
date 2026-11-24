@@ -20,7 +20,7 @@ PRO_PLAN_PRICE_LABEL = "Stripe checkout"
 AUTH_EMAIL_FROM = "DataChat <no-reply@harmongt.uk>"
 # Public SHA-256 fingerprint of the Android release signing key (not a
 # secret). Publishes /.well-known/assetlinks.json so the app can use passkeys.
-ANDROID_SIGNING_SHA256 = "E1:83:83:9A:71:A5:F1:1B:50:A8:ED:E1:C0:27:5D:E8:4B:9D:B6:B4:16:08:4D:DC:0B:5A:3D:75:9D:07:08:8D"
+ANDROID_SIGNING_SHA256 = "3A:1E:C3:1A:BD:CA:BB:0F:25:49:11:62:55:7D:0D:33:87:65:FF:6E:5B:FC:E1:4C:64:4A:86:C1:59:20:21:5D"
 # Secrets: set with `wrangler secret put <NAME>`, never in this file:
 #   AUTH_SECRET, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET
 
