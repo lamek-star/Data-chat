@@ -35,22 +35,36 @@ const storage = {
 
 const absolute = (url) => (url && url.startsWith("/api/") ? `${API_BASE}${url}` : url);
 
-async function api(path, { method = "GET", body, raw, contentType } = {}) {
+// On a slow or flaky connection a request can hang for minutes. Give up
+// after a while so the caller can retry instead of waiting forever.
+const DEFAULT_TIMEOUT_MS = 20000;
+const UPLOAD_TIMEOUT_MS = 90000;
+
+async function api(path, { method = "GET", body, raw, contentType, timeoutMs } = {}) {
   const headers = {};
   if (body !== undefined) headers["Content-Type"] = "application/json";
   if (raw) headers["Content-Type"] = contentType;
   const token = storage.get();
   if (token) headers.Authorization = `Bearer ${token}`;
+  const controller = typeof AbortController === "undefined" ? null : new AbortController();
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs ?? (raw ? UPLOAD_TIMEOUT_MS : DEFAULT_TIMEOUT_MS)) : null;
   let response;
   try {
     response = await fetch(`${API_BASE}${path}`, {
       method,
       headers,
       credentials: "include",
+      signal: controller?.signal,
       body: raw ?? (body === undefined ? undefined : JSON.stringify(body)),
     });
-  } catch {
-    throw Object.assign(new Error("Cannot reach DataChat. Check your connection and try again."), { status: 0 });
+  } catch (error) {
+    const timedOut = error?.name === "AbortError";
+    throw Object.assign(
+      new Error(timedOut ? "The connection is too slow right now. DataChat will keep trying." : "Cannot reach DataChat. Check your connection and try again."),
+      { status: 0, timedOut },
+    );
+  } finally {
+    if (timer) clearTimeout(timer);
   }
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw Object.assign(new Error(data.error || `Request failed (${response.status}).`), { status: response.status });
@@ -237,27 +251,66 @@ export async function sendDirectMessage(recipientId, message) {
   return row;
 }
 
+/** Tells the server these incoming messages have been seen (read receipts, unread counts on other devices). */
+export async function markMessagesRead(ids) {
+  const list = [...new Set(ids)].slice(0, 100);
+  if (!list.length) return { updated: 0 };
+  return api("/api/messages/read", { method: "POST", body: { ids: list } });
+}
+
 /**
  * Delivers new messages by polling every few seconds while the app is open
  * and visible. Calls callback({ new: row }) like the old realtime channel.
  */
-export function subscribeToDirectMessages(callback, intervalMs = 4000) {
+export function subscribeToDirectMessages(callback, { visibleMs = 2500, hiddenMs = 15000, maxBackoffMs = 30000 } = {}) {
   let stopped = false;
   let timer;
-  const tick = async () => {
-    if (stopped) return;
-    if (typeof document === "undefined" || document.visibilityState !== "hidden") {
-      try {
-        const { messages } = await api(`/api/messages?since=${latestMessageMs}`);
-        for (const row of track(messages)) callback({ new: row });
-      } catch {
-        /* offline or signed out: try again on the next tick */
-      }
-    }
-    if (!stopped) timer = setTimeout(tick, intervalMs);
+  let polling = false;
+  let failures = 0;
+  const hidden = () => typeof document !== "undefined" && document.visibilityState === "hidden";
+  const schedule = (ms) => {
+    clearTimeout(timer);
+    if (!stopped) timer = setTimeout(tick, ms);
   };
-  timer = setTimeout(tick, intervalMs);
-  return { stop: () => ((stopped = true), clearTimeout(timer)) };
+  const tick = async () => {
+    if (stopped || polling) return;
+    polling = true;
+    try {
+      // Short timeout: a poll that hangs on a slow link just tries again.
+      const { messages } = await api(`/api/messages?since=${latestMessageMs}`, { timeoutMs: 12000 });
+      failures = 0;
+      for (const row of track(messages)) callback({ new: row });
+    } catch {
+      failures += 1; /* offline or signed out: back off, then try again */
+    } finally {
+      polling = false;
+    }
+    const base = hidden() ? hiddenMs : visibleMs;
+    schedule(failures ? Math.min(maxBackoffMs, base * 2 ** Math.min(failures, 4)) : base);
+  };
+  const onWake = () => {
+    if (!hidden()) {
+      failures = 0;
+      schedule(0);
+    }
+  };
+  if (typeof window !== "undefined") {
+    window.addEventListener("online", onWake);
+    document.addEventListener("visibilitychange", onWake);
+  }
+  schedule(visibleMs);
+  return {
+    /** Check for new messages now (after sending, when the network returns). */
+    pollNow: () => schedule(0),
+    stop: () => {
+      stopped = true;
+      clearTimeout(timer);
+      if (typeof window !== "undefined") {
+        window.removeEventListener("online", onWake);
+        document.removeEventListener("visibilitychange", onWake);
+      }
+    },
+  };
 }
 
 export function unsubscribeChannel(channel) {

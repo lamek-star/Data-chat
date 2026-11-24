@@ -22,8 +22,6 @@ import {
   findPublicProfile,
   loadDirectMessages,
   sendDirectMessage,
-  subscribeToDirectMessages,
-  unsubscribeChannel,
   uploadProfilePhoto,
   loadEntitlement,
   getAccessToken,
@@ -50,6 +48,12 @@ import {
   importRecordsFromCsv,
 } from "./lib/records";
 import { encryptBackup, decryptBackup } from "./lib/backup";
+import { createSyncQueue } from "./cloud/syncQueue";
+import { CONTACT_ADDED_EVENT, OPEN_CHAT_EVENT, useMessaging } from "./useMessaging";
+import { lastMessageByContact, messagePreview, totalUnread, unreadByContact } from "./notify";
+import { NotificationsPanel } from "./NotificationsPanel";
+import { contactLink, normalizeContactCode, parseContactScan, scanProblem } from "./contactScan";
+import { downscaleImage } from "./lib/images";
 import QRCode from "qrcode";
 import { Html5Qrcode } from "html5-qrcode";
 import {
@@ -65,7 +69,6 @@ import {
 } from "recharts";
 
 const K = "datachat-v1";
-const CONTACT_ADDED_EVENT = "datachat:contact-added";
 const API_BASE = (
   import.meta.env.VITE_API_BASE_URL ??
   // In development, call the local API through the Vite /api proxy.
@@ -352,17 +355,26 @@ async function loadCloudDb(authUser) {
       .map((contact) => [contact.remoteUserId, contact]),
   );
   const knownMessageIds = new Set(cloudDb.messages.map((message) => message.id));
+  // Messages from members who aren't contacts yet (they added you by QR or
+  // code): handed to the messaging hook, which adds them as contacts.
+  const fromStrangers = [];
   for (const row of remoteMessages) {
     if (knownMessageIds.has(row.id)) continue;
     const peerId = row.sender_id === authUser.id ? row.recipient_id : row.sender_id;
     const contact = contactByRemoteId.get(peerId);
-    if (!contact) continue;
+    if (!contact) {
+      if (row.sender_id !== authUser.id) fromStrangers.push(row);
+      continue;
+    }
+    const incoming = row.sender_id !== authUser.id;
     cloudDb.messages.push({
       ...row.payload,
       id: row.id,
       owner: authUser.id,
       contact: contact.id,
-      sender: row.sender_id === authUser.id ? "me" : "them",
+      sender: incoming ? "them" : "me",
+      unread: incoming && !row.read_at && !contact.blocked,
+      deliveryStatus: incoming ? undefined : "sent",
       cloudMessage: true,
       time:
         row.payload?.time ||
@@ -372,7 +384,7 @@ async function loadCloudDb(authUser) {
         }),
     });
   }
-  return cloudDb;
+  return { cloudDb, fromStrangers };
 }
 
 const serializeCloudRows = (dbState, userId) => {
@@ -428,10 +440,6 @@ const serializeCloudRows = (dbState, userId) => {
   ];
 };
 
-async function persistCloudData(state, userId) {
-  const rows = serializeCloudRows(state, userId);
-  await overwriteAppData(userId, rows);
-}
 const money = (n, c = "USD") =>
   new Intl.NumberFormat("en-US", {
     style: "currency",
@@ -588,14 +596,37 @@ function App() {
     };
   }, []);
 
+  // Cloud data counts as loaded only for this account: nothing is uploaded
+  // (and no message handling starts) before the member's own data is in.
+  const [cloudReadyFor, setCloudReadyFor] = useState(null);
+  const syncRef = useRef(null);
+  if (cloudConfigured && !syncRef.current) {
+    let warned = false;
+    syncRef.current = createSyncQueue({
+      send: (rows) => overwriteAppData(null, rows),
+      onSaved: () => (warned = false),
+      onError: (_error, failures) => {
+        if (failures >= 2 && !warned) {
+          warned = true;
+          setToast("Saved on this device. DataChat will sync when the connection improves.");
+        }
+      },
+    });
+  }
+  const strangersRef = useRef([]);
+
   useEffect(() => {
     if (!cloudConfigured || !cloudAuthUser) return;
     let active = true;
+    setCloudReadyFor(null);
     loadCloudDb(cloudAuthUser)
-      .then((cloudDb) => {
+      .then(({ cloudDb, fromStrangers }) => {
         if (!active) return;
+        syncRef.current?.markSynced(serializeCloudRows(cloudDb, cloudAuthUser.id));
+        strangersRef.current = fromStrangers;
         setDb(cloudDb);
         setUser(cloudDb.users[0]);
+        setCloudReadyFor(cloudAuthUser.id);
       })
       .catch((error) => setToast(`Cloud data load failed: ${error.message}`));
     return () => {
@@ -603,51 +634,68 @@ function App() {
     };
   }, [cloudAuthUser]);
 
+  // Send pending uploads before the app goes to the background, and as soon
+  // as the network comes back.
   useEffect(() => {
-    if (!cloudConfigured || !cloudAuthUser) return;
-    const receive = ({ new: row }) => {
-      if (!row || row.sender_id === cloudAuthUser.id) return;
-      setDb((current) => {
-        if (current.messages.some((message) => message.id === row.id))
-          return current;
-        const contact = current.contacts.find(
-          (item) => item.remoteUserId === row.sender_id,
-        );
-        if (!contact) return current;
-        return {
-          ...current,
-          messages: [
-            ...current.messages,
-            {
-              ...row.payload,
-              id: row.id,
-              owner: cloudAuthUser.id,
-              contact: contact.id,
-              sender: "them",
-              cloudMessage: true,
-              time:
-                row.payload?.time ||
-                new Date(row.created_at).toLocaleTimeString([], {
-                  hour: "2-digit",
-                  minute: "2-digit",
-                }),
-            },
-          ],
-        };
-      });
-    };
-    const channel = subscribeToDirectMessages(receive);
-    // A new contact may have written before they were added: show those too.
-    const pullHistory = () =>
-      loadDirectMessages()
-        .then((rows) => rows.forEach((row) => receive({ new: row })))
-        .catch(() => {});
-    window.addEventListener(CONTACT_ADDED_EVENT, pullHistory);
+    if (!cloudConfigured) return;
+    const flush = () => syncRef.current?.flush();
+    const onHide = () => document.visibilityState === "hidden" && flush();
+    window.addEventListener("online", flush);
+    document.addEventListener("visibilitychange", onHide);
     return () => {
-      window.removeEventListener(CONTACT_ADDED_EVENT, pullHistory);
-      unsubscribeChannel(channel);
+      window.removeEventListener("online", flush);
+      document.removeEventListener("visibilitychange", onHide);
     };
-  }, [cloudAuthUser]);
+  }, []);
+
+  const cloudReady = cloudConfigured && cloudAuthUser && cloudReadyFor === cloudAuthUser.id && user?.id === cloudAuthUser.id;
+  const messaging = useMessaging({
+    authUser: cloudReady ? cloudAuthUser : null,
+    db,
+    setDb,
+    save: (fn) => save(fn),
+    setToast,
+  });
+
+  // Once loaded: show messages still waiting in the outbox, and adopt
+  // members who wrote before being added as contacts.
+  useEffect(() => {
+    if (!cloudReady) return;
+    const waiting = messaging.pendingOutgoing();
+    if (waiting.length)
+      setDb((d) => {
+        const known = new Set(d.messages.map((m) => m.id));
+        const add = waiting.filter((m) => !known.has(m.id));
+        return add.length ? { ...d, messages: [...d.messages, ...add] } : d;
+      });
+    const rows = strangersRef.current;
+    strangersRef.current = [];
+    rows.forEach((row) => messaging.receive(row, { initial: true }));
+  }, [cloudReady]);
+
+  // Unread count in the tab title, like other chat apps.
+  const unreadCounts = user ? unreadByContact(db.messages, user.id) : {};
+  const unreadTotal = totalUnread(unreadCounts);
+  useEffect(() => {
+    document.title = unreadTotal ? `(${unreadTotal}) DataChat` : "DataChat";
+  }, [unreadTotal]);
+
+  // Banner / notification taps open that conversation.
+  useEffect(() => {
+    const open = () => setPage("home");
+    window.addEventListener(OPEN_CHAT_EVENT, open);
+    return () => window.removeEventListener(OPEN_CHAT_EVENT, open);
+  }, []);
+
+  // A contact link scanned with the phone camera: /?add=CODE
+  const [pendingAdd, setPendingAdd] = useState(() =>
+    normalizeContactCode(new URLSearchParams(window.location.search).get("add")),
+  );
+  const clearPendingAdd = () => {
+    setPendingAdd("");
+    if (new URLSearchParams(window.location.search).has("add"))
+      window.history.replaceState({}, "", window.location.pathname);
+  };
 
   useEffect(() => {
     if (!user) return;
@@ -686,10 +734,11 @@ function App() {
   const save = (fn) =>
     setDb((d) => {
       const next = typeof fn === "function" ? fn(d) : fn;
-      if (cloudConfigured && user?.id) {
-        persistCloudData(next, user.id).catch((error) =>
-          setToast(`Cloud sync failed: ${error.message}`),
-        );
+      if (cloudConfigured) {
+        // Coalesced, ordered, retried upload; never before this account's
+        // own data has loaded (it would overwrite it).
+        if (user?.id && cloudReadyFor === user.id)
+          syncRef.current?.schedule(serializeCloudRows(next, user.id));
       } else {
         localStorage.setItem(K, JSON.stringify(next));
       }
@@ -706,12 +755,14 @@ function App() {
   };
   if (!user) return <Auth db={db} save={save} login={login} />;
   const activeUser = db.users.find((x) => x.id === user.id) || user;
-  const props = { db, save, user: activeUser, setToast };
+  const props = { db, save, user: activeUser, setToast, messaging, unreadCounts };
   return (
     <div className="app">
-      <Sidebar page={page} setPage={setPage} user={activeUser} />
+      <Sidebar page={page} setPage={setPage} user={activeUser} unread={unreadTotal} />
       <main>
-        {page === "home" && <Home {...props} setPage={setPage} />}{" "}
+        {page === "home" && (
+          <Home {...props} setPage={setPage} pendingAdd={pendingAdd} clearPendingAdd={clearPendingAdd} />
+        )}{" "}
         {page === "portal" && <Portal {...props} setPage={setPage} />}{" "}
         {page === "rates" && activeUser.plan === "Pro" && (
           <RatesMarketplace {...props} setPage={setPage} />
@@ -745,7 +796,25 @@ function App() {
           />
         )}
       </main>
-      <MobileNav page={page} setPage={setPage} user={activeUser} />
+      <MobileNav page={page} setPage={setPage} user={activeUser} unread={unreadTotal} />
+      {messaging.banner && (
+        <button
+          type="button"
+          className="message-banner"
+          key={messaging.banner.at}
+          onClick={() => {
+            const { contactId } = messaging.banner;
+            messaging.dismissBanner();
+            window.dispatchEvent(new CustomEvent(OPEN_CHAT_EVENT, { detail: contactId }));
+          }}
+        >
+          <Icon name="MessageCircle" />
+          <span>
+            <b>{messaging.banner.title}</b>
+            <small>{messaging.banner.body}</small>
+          </span>
+        </button>
+      )}
       {toast && (
         <div className="toast">
           <Icon name="CheckCircle2" />
@@ -845,7 +914,7 @@ function Auth({ db, save, login }) {
         // the sign-up details; plan, role and status are set by the server.
         if (otpStep) {
           const result = await verifyEmailCode(email, f.get("otp"), otpStep.profile);
-          const cloudDb = await loadCloudDb(result.user);
+          const { cloudDb } = await loadCloudDb(result.user);
           login(cloudDb.users[0]);
           return;
         }
@@ -1223,7 +1292,7 @@ const nav = [
   ["reports", "ChartNoAxesCombined", "Reports"],
   ["settings", "Settings", "Settings"],
 ];
-function Sidebar({ page, setPage, user }) {
+function Sidebar({ page, setPage, user, unread = 0 }) {
   const visibleNav =
     user.role === "admin"
       ? nav.filter(([p]) => p === "admin" || p === "settings")
@@ -1245,6 +1314,7 @@ function Sidebar({ page, setPage, user }) {
           >
             <Icon name={i} />
             <span>{l}</span>
+            {p === "home" && unread > 0 && <em className="nav-badge" aria-label={`${unread} unread`}>{unread > 99 ? "99+" : unread}</em>}
           </button>
         ))}
       </nav>
@@ -1277,7 +1347,7 @@ function UserAvatar({ person, large = false }) {
     </div>
   );
 }
-function MobileNav({ page, setPage, user }) {
+function MobileNav({ page, setPage, user, unread = 0 }) {
   const mobileNav =
     user?.role === "admin"
       ? nav.filter(([p]) => p === "admin" || p === "settings")
@@ -1292,6 +1362,7 @@ function MobileNav({ page, setPage, user }) {
         >
           <Icon name={i} />
           <small>{l}</small>
+          {p === "home" && unread > 0 && <em className="nav-badge" aria-label={`${unread} unread`}>{unread > 99 ? "99+" : unread}</em>}
         </button>
       ))}
     </div>
@@ -2352,11 +2423,23 @@ function CommunityManager({ db, save, user, setToast }) {
     </section>
   );
 }
-function Home({ db, save, user, setToast, setPage }) {
-  const contacts = db.contacts.filter((x) => x.owner === user.id),
-    [selected, setSelected] = useState(contacts[0]?.id),
+const DELIVERY_LABEL = { sending: "sending…", waiting: "waiting for network", sent: "sent", failed: "not sent" };
+function Home({ db, save, user, setToast, setPage, messaging, unreadCounts = {}, pendingAdd, clearPendingAdd }) {
+  const last = lastMessageByContact(db.messages, user.id);
+  // Most recent conversation first, like other chat apps.
+  const contacts = db.contacts
+    .filter((x) => x.owner === user.id)
+    .map((x, index) => ({ x, index }))
+    .sort((a, b) => (last[b.x.id]?.order ?? -1) - (last[a.x.id]?.order ?? -1) || a.index - b.index)
+    .map(({ x }) => x);
+  // Phones start on the conversation list (so unread chats are visible);
+  // wide screens open the most recent conversation.
+  const [selected, setSelected] = useState(() =>
+    window.matchMedia?.("(max-width: 780px)").matches ? null : contacts[0]?.id,
+  ),
     [search, setSearch] = useState(""),
-    [add, setAdd] = useState(false),
+    [add, setAdd] = useState(() => Boolean(pendingAdd)),
+    [alertsOpen, setAlertsOpen] = useState(false),
     [report, setReport] = useState(null),
     [attachments, setAttachments] = useState(false);
   const messagesRef = useRef(null);
@@ -2367,6 +2450,33 @@ function Home({ db, save, user, setToast, setPage }) {
     msgs = db.messages.filter(
       (x) => x.owner === user.id && x.contact === selected,
     );
+  const openUnread = selected ? unreadCounts[selected] || 0 : 0;
+  // Tell the messaging layer which chat is open, and mark it read.
+  useEffect(() => {
+    messaging?.setOpenChat(selected || null);
+    return () => messaging?.setOpenChat(null);
+  }, [selected]);
+  useEffect(() => {
+    if (!selected || !openUnread) return;
+    const markWhenVisible = () => document.visibilityState !== "hidden" && messaging?.markChatRead(selected);
+    markWhenVisible();
+    document.addEventListener("visibilitychange", markWhenVisible);
+    return () => document.removeEventListener("visibilitychange", markWhenVisible);
+  }, [selected, openUnread]);
+  useEffect(() => {
+    const open = (event) => {
+      if (db.contacts.some((x) => x.id === event.detail)) setSelected(event.detail);
+    };
+    window.addEventListener(OPEN_CHAT_EVENT, open);
+    return () => window.removeEventListener(OPEN_CHAT_EVENT, open);
+  }, [db.contacts]);
+  useEffect(() => {
+    if (pendingAdd) setAdd(true);
+  }, [pendingAdd]);
+  /** Shows the message now; the outbox delivers it, retrying on a slow network. */
+  const deliver = (contact, message) => {
+    if (contact?.remoteUserId && messaging) messaging.queueMessage(contact.remoteUserId, message);
+  };
   const send = async (e) => {
     e.preventDefault();
     if (c?.blocked) return setToast("This member is blocked");
@@ -2386,33 +2496,12 @@ function Home({ db, save, user, setToast, setPage }) {
       }),
     };
     inp.value = "";
+    inp.focus();
     save((d) => ({
       ...d,
       messages: [...d.messages, message],
     }));
-    if (c?.remoteUserId) {
-      try {
-        await sendDirectMessage(c.remoteUserId, message);
-        save((d) => ({
-          ...d,
-          messages: d.messages.map((item) =>
-            item.id === message.id
-              ? { ...item, deliveryStatus: "sent" }
-              : item,
-          ),
-        }));
-      } catch (error) {
-        save((d) => ({
-          ...d,
-          messages: d.messages.map((item) =>
-            item.id === message.id
-              ? { ...item, deliveryStatus: "failed" }
-              : item,
-          ),
-        }));
-        setToast(`Message not sent: ${error.message}`);
-      }
-    }
+    deliver(c, message);
   };
   const sendTransaction = async (record) => {
     if (!c || c.blocked) return;
@@ -2438,31 +2527,8 @@ function Home({ db, save, user, setToast, setPage }) {
       messages: [...d.messages, message],
     }));
     setAttachments(false);
-    if (c.remoteUserId) {
-      try {
-        await sendDirectMessage(c.remoteUserId, message);
-        save((d) => ({
-          ...d,
-          messages: d.messages.map((item) =>
-            item.id === message.id
-              ? { ...item, deliveryStatus: "sent" }
-              : item,
-          ),
-        }));
-      } catch (error) {
-        save((d) => ({
-          ...d,
-          messages: d.messages.map((item) =>
-            item.id === message.id
-              ? { ...item, deliveryStatus: "failed" }
-              : item,
-          ),
-        }));
-        setToast(`Transaction not sent: ${error.message}`);
-        return;
-      }
-    }
-    setToast(`Transaction ${record.id} sent to ${c.name}`);
+    deliver(c, message);
+    setToast(`Transaction ${record.id} ${c.remoteUserId ? "is on its way" : "sent"} to ${c.name}`);
   };
   const toggleVoiceRecording = async () => {
     if (user.plan !== "Pro") return setToast("Voice messages are available with DataChat Pro");
@@ -2480,11 +2546,9 @@ function Home({ db, save, user, setToast, setPage }) {
         if (!blob.size) return;
         if (blob.size > 900000) return setToast("Voice message is too long. Keep recordings under about one minute.");
         const voiceUrl = await new Promise((resolve) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.readAsDataURL(blob); });
-        const message = { id: c.remoteUserId ? crypto.randomUUID() : uid("m"), owner: user.id, contact: c.id, sender: "me", content: "Voice message", voiceUrl, voiceType: blob.type, time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) };
-        try {
-          if (c.remoteUserId) await sendDirectMessage(c.remoteUserId, message);
-          save((d) => ({ ...d, messages: [...d.messages, message] }));
-        } catch (error) { setToast(`Voice message not sent: ${error.message}`); }
+        const message = { id: c.remoteUserId ? crypto.randomUUID() : uid("m"), owner: user.id, contact: c.id, sender: "me", content: "Voice message", voiceUrl, voiceType: blob.type, cloudMessage: Boolean(c.remoteUserId), deliveryStatus: c.remoteUserId ? "sending" : "sent", time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) };
+        save((d) => ({ ...d, messages: [...d.messages, message] }));
+        deliver(c, message);
       };
       recorder.start(250);
       recorderRef.current = recorder;
@@ -2511,8 +2575,13 @@ function Home({ db, save, user, setToast, setPage }) {
           sub={`${contacts.length} trusted contacts`}
           actions={
             <>
-              <button className="icon-btn" aria-label="Notifications">
+              <button
+                className="icon-btn bell-button"
+                aria-label={totalUnread(unreadCounts) ? `Notifications, ${totalUnread(unreadCounts)} unread` : "Notifications"}
+                onClick={() => setAlertsOpen(true)}
+              >
                 <Icon name="Bell" />
+                {totalUnread(unreadCounts) > 0 && <em className="nav-badge">{totalUnread(unreadCounts)}</em>}
               </button>
               <MyContactQr user={user} setToast={setToast} />
               <button className="primary compact" onClick={() => setAdd(true)}>
@@ -2559,13 +2628,22 @@ function Home({ db, save, user, setToast, setPage }) {
                     .map((y) => y[0])
                     .slice(0, 2)}
                 </div>
-                <div>
+                <div className="contact-text">
                   <b>{x.name}</b>
-                  <small>
-                    {x.phone} · {x.country}
+                  <small className={unreadCounts[x.id] ? "unread-preview" : ""}>
+                    {last[x.id]
+                      ? `${last[x.id].message.sender === "me" ? "You: " : ""}${messagePreview(last[x.id].message)}`
+                      : `${x.phone} · ${x.country}`}
                   </small>
                 </div>
-                <span className="online" />
+                <span className="contact-meta">
+                  {last[x.id] && <small>{last[x.id].message.time}</small>}
+                  {unreadCounts[x.id] > 0 && (
+                    <em className="unread-badge" aria-label={`${unreadCounts[x.id]} unread`}>
+                      {unreadCounts[x.id]}
+                    </em>
+                  )}
+                </span>
               </button>
             ))}
           {!contacts.length && (
@@ -2623,7 +2701,12 @@ function Home({ db, save, user, setToast, setPage }) {
                         <Icon name="Fingerprint" size={16} /> Open with fingerprint
                       </button>
                     )}
-                    <small>{m.time}{m.sender === "me" && m.deliveryStatus ? ` · ${m.deliveryStatus}` : ""}</small>
+                    <small>{m.time}{m.sender === "me" && m.deliveryStatus ? ` · ${DELIVERY_LABEL[m.deliveryStatus] || m.deliveryStatus}` : ""}</small>
+                    {m.sender === "me" && m.deliveryStatus === "failed" && messaging && (
+                      <button type="button" className="retry-send" onClick={() => messaging.retryMessage(m)}>
+                        <Icon name="RotateCw" size={14} /> Tap to retry
+                      </button>
+                    )}
                   </div>
                 ),
               )}
@@ -2695,9 +2778,28 @@ function Home({ db, save, user, setToast, setPage }) {
       {add && (
         <ContactModal
           user={user}
+          db={db}
           save={save}
-          close={() => setAdd(false)}
+          initialCode={pendingAdd}
+          close={() => {
+            setAdd(false);
+            clearPendingAdd?.();
+          }}
+          onAdded={(contactId) => setSelected(contactId)}
           setToast={setToast}
+        />
+      )}
+      {alertsOpen && (
+        <NotificationsPanel
+          contacts={db.contacts.filter((x) => x.owner === user.id)}
+          unreadCounts={unreadCounts}
+          last={last}
+          notifications={(db.notifications || []).filter((n) => n.owner === user.id)}
+          openChat={(contactId) => {
+            setAlertsOpen(false);
+            setSelected(contactId);
+          }}
+          close={() => setAlertsOpen(false)}
         />
       )}
       {report && (
@@ -2854,24 +2956,30 @@ function ReportUser({ contact, messages, user, save, setToast, close }) {
 function MyContactQr({ user, setToast }) {
   const [open, setOpen] = useState(false),
     [url, setUrl] = useState("");
-  const payload = JSON.stringify({
-    version: 1,
-    type: "datachat-user-contact",
-    userId: user.id,
-    contactCode:
-      user.contactCode ||
-      String(user.id).replaceAll("-", "").slice(0, 12).toUpperCase(),
-    name: user.name,
-    country: user.country || "Global",
-  });
+  // The QR holds a link: any phone camera opens it (in the DataChat app or
+  // site), and the in-app scanner reads it too.
+  const code = user.contactCode || "";
+  const payload = code ? contactLink(cloudConfig.apiBase || window.location.origin, code) : "";
   useEffect(() => {
-    if (open)
+    if (open && payload)
       QRCode.toDataURL(payload, {
         margin: 3,
         width: 320,
         errorCorrectionLevel: "M",
       }).then(setUrl);
   }, [open, payload]);
+  const shownCode = code.replace(/(.{4})(?=.)/g, "$1 ");
+  const shareLink = async () => {
+    try {
+      if (navigator.share) await navigator.share({ title: "Add me on DataChat", text: `Add ${user.name} on DataChat`, url: payload });
+      else {
+        await navigator.clipboard?.writeText(payload);
+        setToast("Your contact link was copied");
+      }
+    } catch {
+      /* share sheet closed */
+    }
+  };
   return (
     <>
       <button
@@ -2885,24 +2993,33 @@ function MyContactQr({ user, setToast }) {
       {open && (
         <Modal title="My DataChat contact" close={() => setOpen(false)}>
           <div className="qr share-card">
-            {url && <img src={url} alt={`Contact QR code for ${user.name}`} />}
-            <div className="share-summary">
-              <b>{user.name}</b>
-              <span>Code {JSON.parse(payload).contactCode}</span>
-              <small>Ask another DataChat user to scan this code.</small>
-            </div>
-            <div className="share-actions">
-              <button
-                className="secondary"
-                onClick={() => {
-                  navigator.clipboard?.writeText(payload);
-                  setToast("Your contact code was copied");
-                }}
-              >
-                <Icon name="Copy" />
-                Copy contact code
-              </button>
-            </div>
+            {!payload && <p>Your contact code appears here once you are signed in to your DataChat account.</p>}
+            {url && payload && <img src={url} alt={`Contact QR code for ${user.name}`} />}
+            {payload && (
+              <div className="share-summary">
+                <b>{user.name}</b>
+                <span className="mono">Code {shownCode}</span>
+                <small>Let the other person scan this with DataChat or their phone camera.</small>
+              </div>
+            )}
+            {payload && (
+              <div className="share-actions">
+                <button
+                  className="secondary"
+                  onClick={async () => {
+                    await navigator.clipboard?.writeText(code);
+                    setToast("Your contact code was copied");
+                  }}
+                >
+                  <Icon name="Copy" />
+                  Copy code
+                </button>
+                <button className="secondary" onClick={shareLink}>
+                  <Icon name="Share2" />
+                  Share link
+                </button>
+              </div>
+            )}
           </div>
         </Modal>
       )}
@@ -2982,72 +3099,171 @@ function ContactQr({ c, setToast }) {
     </>
   );
 }
-function ContactModal({ user, save, close, setToast }) {
+function ContactModal({ user, db, save, close, setToast, initialCode = "", onAdded }) {
   const [scanError, setScanError] = useState(""),
     [busy, setBusy] = useState(false),
-    fileRef = useRef(null);
-  const addRemoteProfile = (profile) => {
-    if (!profile) throw new Error("No DataChat account matches that code.");
-    if (profile.id === user.id) throw new Error("You cannot add your own account.");
+    [camera, setCamera] = useState(false),
+    [found, setFound] = useState(null), // profile waiting for confirmation
+    fileRef = useRef(null),
+    scannerRef = useRef(null);
+
+  const stopCamera = async () => {
+    const scanner = scannerRef.current;
+    scannerRef.current = null;
+    if (!scanner) return;
+    try {
+      if (scanner.isScanning) await scanner.stop();
+      await scanner.clear();
+    } catch {
+      /* already stopped */
+    }
+  };
+  useEffect(() => () => void stopCamera(), []);
+
+  const existingContact = (profileId) =>
+    (db?.contacts || []).find((x) => x.owner === user.id && x.remoteUserId === profileId);
+
+  /** Look the member up, then ask for confirmation before adding. */
+  const lookup = async ({ userId, contactCode }) => {
+    setBusy(true);
+    setScanError("");
+    try {
+      const profile = await findPublicProfile(userId ? { userId } : { contactCode });
+      if (!profile) throw new Error("No DataChat account matches that code. Check it and try again.");
+      if (profile.id === user.id) throw new Error("That is your own QR code. Scan the other person's code.");
+      const existing = existingContact(profile.id);
+      if (existing) {
+        setToast(`${existing.name} is already in your contacts`);
+        onAdded?.(existing.id);
+        close();
+        return;
+      }
+      setFound(profile);
+    } catch (error) {
+      setScanError(error.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleScanText = (text) => {
+    const parsed = parseContactScan(text);
+    if (parsed.kind === "seal") {
+      close();
+      requestOpenSeal(parsed.value);
+      return;
+    }
+    if (parsed.kind) return setScanError(scanProblem(parsed.kind));
+    lookup(parsed);
+  };
+
+  useEffect(() => {
+    if (initialCode) lookup({ contactCode: initialCode });
+  }, [initialCode]);
+
+  const startCamera = async () => {
+    setScanError("");
+    setCamera(true);
+    // Wait for the camera box to render before attaching the scanner.
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    try {
+      const scanner = new Html5Qrcode("contact-qr-camera");
+      scannerRef.current = scanner;
+      await scanner.start(
+        { facingMode: "environment" },
+        {
+          fps: 10,
+          qrbox: (w, h) => {
+            const side = Math.floor(Math.min(w, h) * 0.75);
+            return { width: side, height: side };
+          },
+        },
+        async (text) => {
+          await stopCamera();
+          setCamera(false);
+          handleScanText(text);
+        },
+        () => {},
+      );
+    } catch (error) {
+      await stopCamera();
+      setCamera(false);
+      const refused = /NotAllowed|Permission/i.test(`${error?.name} ${error?.message || error}`);
+      setScanError(
+        refused
+          ? "Camera access was refused. Allow the camera for DataChat, or use Choose photo instead."
+          : "The camera could not start on this device. Use Choose photo instead.",
+      );
+    }
+  };
+
+  const scanFile = async (file) => {
+    if (!file) return;
+    setBusy(true);
+    setScanError("");
+    const scanner = new Html5Qrcode("contact-qr-reader");
+    try {
+      let text;
+      try {
+        text = await scanner.scanFile(await downscaleImage(file), false);
+      } catch {
+        text = await scanner.scanFile(file, false); // try the full-size photo too
+      }
+      setBusy(false);
+      handleScanText(text);
+    } catch {
+      setBusy(false);
+      setScanError(scanProblem("empty"));
+    } finally {
+      try {
+        scanner.clear();
+      } catch {
+        /* nothing to clear */
+      }
+    }
+  };
+
+  const confirmAdd = () => {
+    const profile = found;
+    const contactId = `cloud-${profile.id}`;
     save((d) => {
-      if (d.contacts.some((contact) => contact.remoteUserId === profile.id))
-        return d;
+      if (d.contacts.some((contact) => contact.remoteUserId === profile.id)) return d;
       return {
         ...d,
         contacts: [
           ...d.contacts,
           {
-            id: `cloud-${profile.id}`,
+            id: contactId,
             remoteUserId: profile.id,
             contactCode: profile.contact_code,
             owner: user.id,
             name: profile.display_name,
             phone: `ID ${profile.contact_code}`,
             country: profile.country || "Global",
+            profilePhoto: profile.avatar_url || null,
             color: ["#d7a62b", "#4c8ed9", "#8f69d8", "#35a57a"][d.contacts.length % 4],
-            isOnline: true,
           },
         ],
       };
     });
     window.dispatchEvent(new Event(CONTACT_ADDED_EVENT));
-    setToast(`${profile.display_name} added. You can now message each other.`);
+    setToast(`${profile.display_name} added. Say hello!`);
+    onAdded?.(contactId);
     close();
   };
-  const scanFile = async (file) => {
-    if (!file) return;
-    setBusy(true);
-    setScanError("");
-    try {
-      const scanner = new Html5Qrcode("contact-qr-reader");
-      const value = await scanner.scanFile(file, false);
-      await scanner.clear();
-      const payload = JSON.parse(value);
-      if (payload.type !== "datachat-user-contact" || !payload.userId)
-        throw new Error("This is not a DataChat user contact QR code.");
-      const profile = await findPublicProfile({ userId: payload.userId });
-      addRemoteProfile(profile);
-    } catch (error) {
-      setScanError(error.message || "No readable DataChat contact was found.");
-    } finally {
-      setBusy(false);
-    }
-  };
+
   const submit = async (e) => {
     e.preventDefault();
     const f = new FormData(e.currentTarget);
-    const contactCode = String(f.get("contactCode") || "").trim();
-    if (cloudConfigured && contactCode) {
-      setBusy(true);
-      setScanError("");
-      try {
-        const profile = await findPublicProfile({ contactCode });
-        addRemoteProfile(profile);
-      } catch (error) {
-        setScanError(error.message);
-        setBusy(false);
+    if (cloudConfigured) {
+      const raw = String(f.get("contactCode") || "");
+      if (raw.trim()) {
+        const contactCode = normalizeContactCode(raw);
+        if (!contactCode) return setScanError("A contact code has 12 letters and numbers, like 1A2B3C4D5E6F.");
+        return lookup({ contactCode });
       }
-      return;
+      if (!String(f.get("name") || "").trim())
+        return setScanError("Scan their QR, enter their contact code, or fill in a name below.");
     }
     save((d) => ({
       ...d,
@@ -3059,63 +3275,143 @@ function ContactModal({ user, save, close, setToast }) {
           name: f.get("name"),
           phone: f.get("phone"),
           country: f.get("country"),
-          color: ["#d7a62b", "#4c8ed9", "#8f69d8", "#35a57a"][
-            d.contacts.length % 4
-          ],
+          color: ["#d7a62b", "#4c8ed9", "#8f69d8", "#35a57a"][d.contacts.length % 4],
         },
       ],
     }));
     setToast("Contact added");
     close();
   };
+
+  if (found)
+    return (
+      <Modal title="Add this contact?" close={close}>
+        <div className="confirm-contact">
+          <UserAvatar person={{ name: found.display_name, profilePhoto: found.avatar_url }} large />
+          <b>{found.display_name}</b>
+          <small>
+            {found.username ? `@${found.username} · ` : ""}
+            {found.country || "Global"} · ID {found.contact_code}
+          </small>
+          <p>Only add people you know. You can message each other once added.</p>
+          <div className="confirm-actions">
+            <button type="button" className="secondary" onClick={() => setFound(null)}>
+              Back
+            </button>
+            <button type="button" className="primary" onClick={confirmAdd}>
+              <Icon name="UserPlus" /> Add contact
+            </button>
+          </div>
+        </div>
+      </Modal>
+    );
+
+  const localFields = (
+    <>
+      <label>
+        Full name
+        <input name="name" required={!cloudConfigured} />
+      </label>
+      <label>
+        Phone number
+        <input name="phone" required={!cloudConfigured} type="tel" />
+      </label>
+      <label>
+        Country
+        <select name="country">
+          {countries.map((x) => (
+            <option key={x}>{x}</option>
+          ))}
+        </select>
+      </label>
+    </>
+  );
+
   return (
     <Modal title="Add trusted contact" close={close}>
       <form className="form" onSubmit={submit}>
         {cloudConfigured && (
           <>
             <div className="scan-contact-card">
-              <span><Icon name="ScanLine" /></span>
+              <span>
+                <Icon name="ScanLine" />
+              </span>
               <div>
                 <b>Scan their DataChat QR</b>
-                <small>Choose a QR image or take a photo with your phone.</small>
+                <small>Point your camera at the QR on their phone (Messages, QR icon).</small>
               </div>
-              <button type="button" className="primary" disabled={busy} onClick={() => fileRef.current?.click()}>
-                {busy ? "Reading…" : "Scan QR"}
-              </button>
-              <input ref={fileRef} hidden type="file" accept="image/*" capture="environment" onChange={(event) => scanFile(event.target.files?.[0])} />
-              <div id="contact-qr-reader" />
+              <div className="scan-buttons">
+                <button type="button" className="primary" disabled={busy || camera} onClick={startCamera}>
+                  <Icon name="Camera" /> {busy ? "Looking up…" : "Scan with camera"}
+                </button>
+                <button type="button" className="secondary" disabled={busy || camera} onClick={() => fileRef.current?.click()}>
+                  <Icon name="Image" /> Choose photo
+                </button>
+              </div>
+              <input
+                ref={fileRef}
+                hidden
+                type="file"
+                accept="image/*"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  event.target.value = ""; // the same photo can be chosen again
+                  scanFile(file);
+                }}
+              />
+              {camera && (
+                <div className="camera-box">
+                  <div id="contact-qr-camera" />
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => {
+                      stopCamera();
+                      setCamera(false);
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
+              <div id="contact-qr-reader" hidden />
             </div>
-            <div className="billing-divider"><span>or enter their code</span></div>
+            <div className="billing-divider">
+              <span>or enter their code</span>
+            </div>
             <label>
               DataChat contact code
-              <input name="contactCode" autoCapitalize="characters" placeholder="12-character code" />
-              <small>The code is displayed beneath the user’s personal QR.</small>
+              <input name="contactCode" autoCapitalize="characters" autoComplete="off" placeholder="12-character code" />
+              <small>The code is shown under their personal QR. Spaces and dashes are fine.</small>
             </label>
-            {scanError && <div className="error" role="alert">{scanError}</div>}
+            {scanError && (
+              <div className="error" role="alert">
+                {scanError}
+              </div>
+            )}
+            <button className="primary" disabled={busy}>
+              {busy ? "Looking up…" : "Find by contact code"}
+            </button>
+            <details className="local-contact">
+              <summary>Not on DataChat yet? Save their details on this device</summary>
+              {localFields}
+              <button className="secondary" disabled={busy}>
+                Save contact
+              </button>
+            </details>
           </>
         )}
-        <label>
-          Full name
-          <input name="name" required={!cloudConfigured} />
-        </label>
-        <label>
-          Phone number
-          <input name="phone" required={!cloudConfigured} type="tel" />
-        </label>
-        <label>
-          Country
-          <select name="country">
-            {countries.map((x) => (
-              <option key={x}>{x}</option>
-            ))}
-          </select>
-        </label>
-        <button className="primary" disabled={busy}>{cloudConfigured ? "Add by contact code" : "Add contact"}</button>
+        {!cloudConfigured && (
+          <>
+            {localFields}
+            <button className="primary">Add contact</button>
+          </>
+        )}
       </form>
     </Modal>
   );
 }
-function Records({ db, save, user, setToast }) {
+function Records({ db, save, user, setToast, messaging }) {
   const all = db.records.filter((x) => x.owner === user.id),
     [search, setSearch] = useState(""),
     [filter, setFilter] = useState("All"),
@@ -3343,6 +3639,7 @@ function Records({ db, save, user, setToast }) {
           db={db}
           save={save}
           user={user}
+          messaging={messaging}
           close={() => setSharing(null)}
           setToast={setToast}
         />
@@ -3624,7 +3921,7 @@ function TransactionChatCard({ message, db, save, user, setToast }) {
     </motion.article>
   );
 }
-function ShareRecordModal({ record, db, save, user, close, setToast }) {
+function ShareRecordModal({ record, db, save, user, close, setToast, messaging }) {
   const [qr, setQr] = useState("");
   const [contactId, setContactId] = useState("");
   const data = transactionPayload(record);
@@ -3688,25 +3985,27 @@ function ShareRecordModal({ record, db, save, user, close, setToast }) {
       (x) => x.id === contactId && x.owner === user.id,
     );
     if (!contact) return setToast("Choose a contact first");
-    save((d) => ({
-      ...d,
-      messages: [
-        ...d.messages,
-        {
-          id: uid("m"),
-          owner: user.id,
-          contact: contact.id,
-          sender: "me",
-          content: text,
-          recordId: record.id,
-          transaction: data,
-          time: new Date().toLocaleTimeString([], {
-            hour: "2-digit",
-            minute: "2-digit",
-          }),
-        },
-      ],
-    }));
+    if (contact.blocked) return setToast("This member is blocked");
+    const remote = Boolean(contact.remoteUserId);
+    const message = {
+      id: remote ? crypto.randomUUID() : uid("m"),
+      owner: user.id,
+      contact: contact.id,
+      sender: "me",
+      content: text,
+      recordId: record.id,
+      transaction: data,
+      cloudMessage: remote,
+      deliveryStatus: remote ? "sending" : "sent",
+      time: new Date().toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+      }),
+    };
+    save((d) => ({ ...d, messages: [...d.messages, message] }));
+    // Previously this only saved the message on this device: a DataChat
+    // member never received it. It now goes through the outbox.
+    if (remote) messaging?.queueMessage(contact.remoteUserId, message);
     setToast(`${record.id} sent to ${contact.name}`);
     close();
   };
