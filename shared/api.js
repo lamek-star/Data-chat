@@ -36,11 +36,15 @@ import {
   readAvatar,
   redeemCode,
   replaceData,
+  requireAdmin,
   saveProfilePhoto,
   sendMessage,
   updateProfile,
 } from "./data.js";
 import { requestLocation } from "./email.js";
+import { listAudit } from "./audit.js";
+import { deleteAccount, exportAccount } from "./account.js";
+import { adminListReports, adminReviewReport, createReport, listMyReports } from "./safety.js";
 import {
   createSeal,
   listPasskeys,
@@ -146,6 +150,21 @@ async function memberRoutes(request, env, url, user) {
   if (pathname === "/api/admin/members" && m === "PATCH") return json(request, env, await adminSetMember(env, user, await readJson(request)));
   if (pathname === "/api/admin/codes" && m === "GET") return json(request, env, { codes: await adminListCodes(env, user) });
   if (pathname === "/api/admin/codes" && m === "POST") return json(request, env, { code: await adminCreateCode(env, user, (await readJson(request)).code) });
+  // Safety reports, the admin audit log, and the member's own account.
+  if (pathname === "/api/reports" && m === "POST") return json(request, env, { report: await createReport(env, user, await readJson(request)) });
+  if (pathname === "/api/reports" && m === "GET") return json(request, env, { reports: await listMyReports(env, user) });
+  if (pathname === "/api/admin/reports" && m === "GET") return json(request, env, { reports: await adminListReports(env, user, url.searchParams.get("status")) });
+  if (pathname === "/api/admin/reports" && m === "PATCH") return json(request, env, await adminReviewReport(env, user, await readJson(request)));
+  if (pathname === "/api/admin/audit" && m === "GET") {
+    requireAdmin(user);
+    return json(request, env, { events: await listAudit(env, url.searchParams.get("limit")) });
+  }
+  if (pathname === "/api/account/export" && m === "GET")
+    return json(request, env, await exportAccount(env, user), 200, { "Cache-Control": "no-store" });
+  if (pathname === "/api/account/delete" && m === "POST") {
+    const result = await deleteAccount(env, user, await readJson(request));
+    return json(request, env, result, 200, { "Set-Cookie": clearSessionCookie() });
+  }
   // Passkeys (fingerprint / face unlock) and sealed transfers.
   if (pathname === "/api/passkeys" && m === "GET") return json(request, env, { passkeys: await listPasskeys(env, user) });
   if (pathname === "/api/passkeys/register/options" && m === "POST") return json(request, env, await passkeyRegistrationOptions(env, user));
@@ -258,7 +277,7 @@ export async function handleApi(request, env, deps = {}) {
       return json(request, env, { url: session.url });
     }
 
-    const known = /^\/api\/(data|profiles?|profile\/photo|messages(\/read)?|pro\/redeem|admin\/(members|codes)|passkeys(\/register\/(options|verify)|\/remove)?|sealed(\/open(\/options)?)?)$/.test(url.pathname);
+    const known = /^\/api\/(data|profiles?|profile\/photo|messages(\/read)?|pro\/redeem|admin\/(members|codes|reports|audit)|reports|account\/(export|delete)|passkeys(\/register\/(options|verify)|\/remove)?|sealed(\/open(\/options)?)?)$/.test(url.pathname);
     if (known) {
       if (!user) return json(request, env, { error: "Sign in to continue." }, 401);
       const response = await memberRoutes(request, env, url, user);

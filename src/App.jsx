@@ -27,7 +27,9 @@ import {
   uploadProfilePhoto,
   loadEntitlement,
   getAccessToken,
+  submitReport,
 } from "./cloud/cloudClient";
+import { AccountPanel } from "./AccountPanel";
 import * as I from "lucide-react";
 import {
   LockedShareSection,
@@ -63,6 +65,7 @@ import {
 } from "recharts";
 
 const K = "datachat-v1";
+const CONTACT_ADDED_EVENT = "datachat:contact-added";
 const API_BASE = (
   import.meta.env.VITE_API_BASE_URL ??
   // In development, call the local API through the Vite /api proxy.
@@ -634,7 +637,14 @@ function App() {
       });
     };
     const channel = subscribeToDirectMessages(receive);
+    // A new contact may have written before they were added: show those too.
+    const pullHistory = () =>
+      loadDirectMessages()
+        .then((rows) => rows.forEach((row) => receive({ new: row })))
+        .catch(() => {});
+    window.addEventListener(CONTACT_ADDED_EVENT, pullHistory);
     return () => {
+      window.removeEventListener(CONTACT_ADDED_EVENT, pullHistory);
       unsubscribeChannel(channel);
     };
   }, [cloudAuthUser]);
@@ -2698,10 +2708,34 @@ function Home({ db, save, user, setToast, setPage }) {
   );
 }
 function ReportUser({ contact, messages, user, save, setToast, close }) {
-  const [submitted, setSubmitted] = useState(false);
-  const submit = (e) => {
+  const [submitted, setSubmitted] = useState(false),
+    [sending, setSending] = useState(false),
+    [sendError, setSendError] = useState(""),
+    [reviewed, setReviewed] = useState(false);
+  const submit = async (e) => {
     e.preventDefault();
     const f = new FormData(e.currentTarget);
+    setSendError("");
+    // Members on DataChat are reported to the admins; the server copies the
+    // message evidence itself. Contacts kept only on this device can't be.
+    let sentToAdmins = false;
+    if (cloudConfigured && contact.remoteUserId) {
+      setSending(true);
+      try {
+        await submitReport({
+          reportedId: contact.remoteUserId,
+          reason: f.get("reason"),
+          details: f.get("details"),
+          includeMessages: f.get("evidence") === "on",
+        });
+        sentToAdmins = true;
+      } catch (error) {
+        setSending(false);
+        setSendError(error.message);
+        return;
+      }
+      setSending(false);
+    }
     const report = {
       id: uid("report"),
       reporterId: user.id,
@@ -2712,7 +2746,7 @@ function ReportUser({ contact, messages, user, save, setToast, close }) {
       includeMessages: f.get("evidence") === "on",
       evidence: f.get("evidence") === "on" ? messages.slice(-10) : [],
       createdAt: new Date().toISOString(),
-      status: "Submitted",
+      status: sentToAdmins ? "Sent to DataChat safety team" : "Saved on this device",
     };
     save((d) => ({
       ...d,
@@ -2724,8 +2758,9 @@ function ReportUser({ contact, messages, user, save, setToast, close }) {
             )
           : d.contacts,
     }));
+    setReviewed(sentToAdmins);
     setSubmitted(true);
-    setToast("Safety report submitted");
+    setToast(sentToAdmins ? "Report sent to the DataChat safety team" : "Report saved on this device");
   };
   return (
     <Modal title="Report or block member" close={close}>
@@ -2736,8 +2771,10 @@ function ReportUser({ contact, messages, user, save, setToast, close }) {
           </span>
           <h3>Report received</h3>
           <p>
-            Your report about {contact.name} was saved for safety review. If you
-            feel in immediate danger, contact local emergency services.
+            {reviewed
+              ? `Your report about ${contact.name} was sent to the DataChat safety team for review.`
+              : `${contact.name} isn't a DataChat member, so your report was saved on this device only.`}{" "}
+            If you feel in immediate danger, contact local emergency services.
           </p>
           <button className="primary" onClick={close}>
             Done
@@ -2783,7 +2820,7 @@ function ReportUser({ contact, messages, user, save, setToast, close }) {
             <input type="checkbox" name="evidence" defaultChecked />
             <span>
               <b>Include recent messages</b>
-              <small>Attach the last 10 messages as evidence.</small>
+              <small>The safety team will see your last 10 messages with this member.</small>
             </span>
           </label>
           <label className="check-row danger-row">
@@ -2793,13 +2830,14 @@ function ReportUser({ contact, messages, user, save, setToast, close }) {
               <small>Prevent new messages in this local workspace.</small>
             </span>
           </label>
+          {sendError && <div className="error">{sendError}</div>}
           <div className="modal-actions">
             <button type="button" className="secondary" onClick={close}>
               Cancel
             </button>
-            <button className="primary danger-submit">
+            <button className="primary danger-submit" disabled={sending}>
               <Icon name="Flag" />
-              Submit report
+              {sending ? "Sending…" : "Submit report"}
             </button>
           </div>
         </form>
@@ -2966,6 +3004,7 @@ function ContactModal({ user, save, close, setToast }) {
         ],
       };
     });
+    window.dispatchEvent(new Event(CONTACT_ADDED_EVENT));
     setToast(`${profile.display_name} added. You can now message each other.`);
     close();
   };
@@ -4933,6 +4972,7 @@ function Settings({ db, save, user, logout, setToast, onPlanChanged }) {
           </Setting>
         </section>
         {cloudConfigured && <PasskeyPanel setToast={setToast} />}
+        {cloudConfigured && <AccountPanel user={user} setToast={setToast} />}
         {user.role !== "admin" && (
           <BackupPanel db={db} save={save} user={user} setToast={setToast} />
         )}
@@ -5032,7 +5072,7 @@ function Settings({ db, save, user, logout, setToast, onPlanChanged }) {
             </div>
             <div>
               <dt>Version</dt>
-              <dd>1.0.0</dd>
+              <dd>2.0.0</dd>
             </div>
             <div>
               <dt>Plan</dt>
@@ -5040,7 +5080,7 @@ function Settings({ db, save, user, logout, setToast, onPlanChanged }) {
             </div>
             <div>
               <dt>Storage</dt>
-              <dd>Private local workspace</dd>
+              <dd>{cloudConfigured ? "Synced to your account" : "Private local workspace"}</dd>
             </div>
           </dl>
           <button className="secondary danger full-btn" onClick={logout}>
@@ -5065,7 +5105,10 @@ function Settings({ db, save, user, logout, setToast, onPlanChanged }) {
               plan, account status, registration date, and access-code history
               to operate the service. The administrator console is not
               authorized to display your messages, contacts, financial records,
-              transaction security keys, or encrypted backup contents.
+              transaction security keys, or encrypted backup contents. The one
+              exception: if a member reports you for safety reasons and chooses
+              to include evidence, the safety team sees the last 10 text
+              messages of that conversation.
             </p>
             <h3>2. Financial responsibility</h3>
             <p>
@@ -5082,9 +5125,9 @@ function Settings({ db, save, user, logout, setToast, onPlanChanged }) {
             </p>
             <h3>4. Confidentiality and retention</h3>
             <p>
-              Keep credentials private. Export important records for backup. In
-              this standalone edition, information is stored in this browser and
-              may be lost if browser storage is cleared.
+              Keep credentials private. Your workspace is synced to your DataChat
+              account. You can download a copy of all your data, or delete your
+              account and its data for good, from Settings → Your data.
             </p>
             <h3>5. Acceptable use</h3>
             <p>

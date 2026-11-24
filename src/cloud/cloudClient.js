@@ -369,3 +369,40 @@ export const sealLink = (code) => {
   const base = API_BASE || (typeof location !== "undefined" ? location.origin : "https://datachat.harmongt.uk");
   return `${base}/?seal=${encodeURIComponent(code)}`;
 };
+
+// --------------------------------------------- safety reports & account --
+
+/** Reports a member to the admins. The server copies the message evidence. */
+export async function submitReport({ reportedId, reason, details, includeMessages }) {
+  return (await api("/api/reports", { method: "POST", body: { reportedId, reason, details, includeMessages } })).report;
+}
+
+export async function listMyReports() {
+  return (await api("/api/reports")).reports;
+}
+
+export async function listAdminReports(status) {
+  return (await api(`/api/admin/reports${status ? `?status=${encodeURIComponent(status)}` : ""}`)).reports;
+}
+
+export async function reviewAdminReport(id, status, note = "") {
+  return api("/api/admin/reports", { method: "PATCH", body: { id, status, note } });
+}
+
+export async function listAdminAudit() {
+  return (await api("/api/admin/audit")).events;
+}
+
+/** Everything DataChat holds about the signed-in member, as JSON. */
+export async function exportMyAccount() {
+  return api("/api/account/export");
+}
+
+/** Deletes the account for good; the member types their email to confirm. */
+export async function deleteMyAccount(confirmEmail) {
+  const result = await api("/api/account/delete", { method: "POST", body: { confirmEmail } });
+  storage.set(null);
+  currentUser = null;
+  emit("SIGNED_OUT");
+  return result;
+}

@@ -14,6 +14,8 @@ import {
   Download,
   Trash2,
   Vault,
+  Flag,
+  History,
 } from "lucide-react";
 import "./styles.css";
 import {
@@ -28,7 +30,27 @@ import {
   listCloudMembers,
   setCloudMemberPlan,
   setCloudMemberStatus,
+  listAdminReports,
+  reviewAdminReport,
+  listAdminAudit,
 } from "./cloud/cloudClient";
+
+const AUDIT_LABELS = {
+  "member.update": "Changed a member",
+  "code.create": "Created a Pro code",
+  "report.review": "Reviewed a report",
+};
+const describeAudit = (event, members) => {
+  const target = members.find((m) => m.id === event.targetId);
+  const d = event.detail || {};
+  const parts = [];
+  if (target) parts.push(target.name || target.email);
+  if (d.plan) parts.push(`plan: ${d.plan}`);
+  if (d.status) parts.push(`status: ${d.status}`);
+  if (d.codeEnding) parts.push(`code ending ${d.codeEnding}`);
+  if (d.note) parts.push(`note: ${d.note}`);
+  return parts.join(" · ");
+};
 
 const KEY = "datachat-v1";
 const sampleAdmin = {
@@ -85,6 +107,9 @@ function AdminApp() {
     [error, setError] = useState(""),
     [codeEmail, setCodeEmail] = useState(""),
     [members, setMembers] = useState([]),
+    [reports, setReports] = useState([]),
+    [audit, setAudit] = useState([]),
+    [reportFilter, setReportFilter] = useState("open"),
     [toast, setToast] = useState("");
   const accessCodeUserName = (accessCode) =>
     accessCode.usedByName ||
@@ -107,12 +132,16 @@ function AdminApp() {
   const openAdminSession = async () => {
     // A non-admin keeps their normal app session; the portal just refuses.
     if (!(await isCloudAdmin())) throw new Error("This account is not a DataChat administrator.");
-    const [codes, cloudMembers] = await Promise.all([
+    const [codes, cloudMembers, cloudReports, events] = await Promise.all([
       listCloudAccessCodes(),
       listCloudMembers(),
+      listAdminReports(),
+      listAdminAudit(),
     ]);
     setDb((current) => ({ ...current, accessCodes: codes }));
     setMembers(cloudMembers);
+    setReports(cloudReports);
+    setAudit(events);
     setLoggedIn(true);
   };
   useEffect(() => {
@@ -195,8 +224,36 @@ function AdminApp() {
       setToast(`Update failed: ${updateError.message}`);
     } finally {
       setMembers(await listCloudMembers().catch(() => members));
+      setAudit(await listAdminAudit().catch(() => audit));
     }
   };
+  const refreshReports = async () => {
+    const [r, a] = await Promise.all([listAdminReports().catch(() => reports), listAdminAudit().catch(() => audit)]);
+    setReports(r);
+    setAudit(a);
+  };
+  const review = async (report, status) => {
+    let note = "";
+    if (status !== "open") {
+      note = window.prompt(status === "actioned" ? "What action did you take? (optional)" : "Why dismiss it? (optional)", "");
+      if (note === null) return; // cancelled
+    }
+    try {
+      await reviewAdminReport(report.id, status, note);
+      setToast(status === "open" ? "Report reopened" : "Report updated");
+    } catch (reviewError) {
+      setToast(`Update failed: ${reviewError.message}`);
+    } finally {
+      await refreshReports();
+    }
+  };
+  const suspendReported = async (report) => {
+    if (!window.confirm(`Suspend ${report.reported.name}? They are signed out everywhere at once.`)) return;
+    await updateUser(report.reported.id, { status: "suspended" });
+    await refreshReports();
+  };
+  const openCount = reports.filter((r) => r.status === "open").length;
+  const shownReports = reports.filter((r) => reportFilter === "all" || r.status === reportFilter);
   const generate = async () => {
     const code = makeCode();
     try {
@@ -366,6 +423,114 @@ function AdminApp() {
               </article>
             ))}
           </div>
+        </section>
+        <section className="panel admin-reports">
+          <div className="panel-title">
+            <div>
+              <h2>
+                <Flag /> Safety reports
+              </h2>
+              <p>{openCount ? `${openCount} waiting for review` : "Nothing waiting for review"}</p>
+            </div>
+            <div className="report-filter" role="group" aria-label="Filter reports">
+              {["open", "actioned", "dismissed", "all"].map((f) => (
+                <button
+                  key={f}
+                  aria-pressed={reportFilter === f}
+                  className={reportFilter === f ? "active" : ""}
+                  onClick={() => setReportFilter(f)}
+                >
+                  {f[0].toUpperCase() + f.slice(1)}
+                </button>
+              ))}
+            </div>
+          </div>
+          {!shownReports.length && <p className="admin-empty">No {reportFilter === "all" ? "" : reportFilter + " "}reports.</p>}
+          <div className="report-list">
+            {shownReports.map((r) => (
+              <article key={r.id} className={`report-card status-${r.status}`}>
+                <header>
+                  <b>{r.reason}</b>
+                  <span className={`badge ${r.status === "open" ? "pending" : "completed"}`}>{r.status}</span>
+                </header>
+                <small>{new Date(r.createdAt).toLocaleString()}</small>
+                <dl>
+                  <div>
+                    <dt>Reported</dt>
+                    <dd>
+                      {r.reported.name} <span>{r.reported.email}</span>
+                      {r.reported.status === "suspended" && <em> · suspended</em>}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>By</dt>
+                    <dd>
+                      {r.reporter.name} <span>{r.reporter.email}</span>
+                    </dd>
+                  </div>
+                </dl>
+                {r.details && <p className="report-details">{r.details}</p>}
+                {r.evidence?.length > 0 && (
+                  <details className="report-evidence">
+                    <summary>{r.evidence.length} message(s) from the conversation</summary>
+                    <ol>
+                      {r.evidence.map((m, i) => (
+                        <li key={i} className={m.senderId === r.reported.id ? "from-reported" : ""}>
+                          <b>{m.senderId === r.reported.id ? r.reported.name : r.reporter.name}</b>
+                          <span>{m.text}</span>
+                          <small>{new Date(m.at).toLocaleString()}</small>
+                        </li>
+                      ))}
+                    </ol>
+                  </details>
+                )}
+                {r.adminNote && <p className="report-note">Note: {r.adminNote}</p>}
+                <div className="report-actions">
+                  {r.reported.status !== "suspended" && (
+                    <button className="secondary danger" onClick={() => suspendReported(r)}>
+                      Suspend member
+                    </button>
+                  )}
+                  {r.status === "open" ? (
+                    <>
+                      <button className="secondary" onClick={() => review(r, "actioned")}>
+                        Mark actioned
+                      </button>
+                      <button className="secondary" onClick={() => review(r, "dismissed")}>
+                        Dismiss
+                      </button>
+                    </>
+                  ) : (
+                    <button className="secondary" onClick={() => review(r, "open")}>
+                      Reopen
+                    </button>
+                  )}
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+        <section className="panel admin-audit">
+          <div className="panel-title">
+            <div>
+              <h2>
+                <History /> Admin activity
+              </h2>
+              <p>Every change made in this portal, newest first.</p>
+            </div>
+          </div>
+          {!audit.length && <p className="admin-empty">No admin actions yet.</p>}
+          <ol className="audit-list">
+            {audit.slice(0, 50).map((e) => (
+              <li key={e.id}>
+                <b>{AUDIT_LABELS[e.action] || e.action}</b>
+                <span>{describeAudit(e, members)}</span>
+                <small>
+                  {e.adminEmail} · {new Date(e.createdAt).toLocaleString()}
+                </small>
+              </li>
+            ))}
+          </ol>
         </section>
         <section className="panel admin-links">
           <div className="panel-title">

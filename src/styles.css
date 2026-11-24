@@ -3312,3 +3312,47 @@ input::placeholder, textarea::placeholder { color: #5f7089; }
   *, *::before, *::after { animation: none !important; transition: none !important; }
   button:active, .primary:active, .secondary:active { transform: none !important; }
 }
+
+/* Admin: safety reports and activity log */
+.report-filter { display: flex; gap: 4px; padding: 3px; background: var(--card2); border: 1px solid var(--border); border-radius: 10px; }
+.report-filter button { padding: 6px 11px; border-radius: 7px; background: transparent; color: var(--muted); font-size: 12px; min-height: 0; }
+.report-filter button.active { background: var(--card); color: var(--gold2); }
+.admin-empty { color: var(--muted); padding: 12px 0; margin: 0; }
+.report-list { display: grid; gap: 12px; }
+.report-card { border: 1px solid var(--border); border-left: 3px solid var(--gold); border-radius: 12px; padding: 14px 16px; background: var(--card2); display: grid; gap: 8px; }
+.report-card.status-actioned { border-left-color: var(--green); }
+.report-card.status-dismissed { border-left-color: var(--border); opacity: 0.85; }
+.report-card header { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.report-card > small { color: var(--muted); }
+.report-card dl { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px; margin: 0; }
+.report-card dt { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+.report-card dl > div { display: block; padding: 0; border: 0; }
+.report-card dd { margin: 2px 0 0; overflow-wrap: anywhere; text-align: left; }
+.report-card dd span { color: var(--muted); font-size: 13px; }
+.report-card dd em { color: var(--red); font-style: normal; }
+.report-details { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.report-note { margin: 0; color: var(--muted); font-size: 13px; }
+.report-evidence summary { cursor: pointer; color: var(--gold2); font-size: 13px; }
+.report-evidence ol { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; }
+.report-evidence li { display: grid; gap: 2px; padding: 8px 10px; border-radius: 8px; background: var(--card); border: 1px solid var(--border); }
+.report-evidence li.from-reported { border-color: #58303a; }
+.report-evidence li b { font-size: 12px; }
+.report-evidence li span { overflow-wrap: anywhere; }
+.report-evidence li small { color: var(--muted); font-size: 11px; }
+.report-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.audit-list { list-style: none; margin: 0; padding: 0; display: grid; }
+.audit-list li { display: grid; grid-template-columns: 170px 1fr auto; gap: 12px; align-items: baseline; padding: 10px 0; border-top: 1px solid var(--border); }
+.audit-list li span { overflow-wrap: anywhere; }
+.audit-list li small { color: var(--muted); }
+@media (max-width: 720px) {
+  .audit-list li { grid-template-columns: 1fr; gap: 2px; }
+  .admin-reports .panel-title { flex-wrap: wrap; gap: 10px; }
+}
+
+/* Settings: your data */
+.account-data-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.account-delete-form { margin-top: 14px; }
+.account-delete-warning { display: flex; gap: 10px; align-items: flex-start; padding: 12px; border: 1px solid #58303a; border-radius: 10px; color: #f3c2c2; background: rgba(227, 110, 110, 0.08); }
+.account-delete-warning svg { flex: none; color: var(--red); margin-top: 2px; }
+.account-delete-warning p { margin: 0; }
+.account-delete-form button:disabled { opacity: 0.5; cursor: not-allowed; }

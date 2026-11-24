@@ -4,6 +4,7 @@
 // see. This replaces Supabase row-level security, so tests/unit/data.test.js
 // covers each rule.
 
+import { recordAudit } from "./audit.js";
 import { effectivePlan } from "./auth.js";
 
 export class ApiError extends Error {
@@ -231,7 +232,7 @@ export async function grantPro(env, userId) {
 
 // --------------------------------------------------------------- admin --
 
-function requireAdmin(user) {
+export function requireAdmin(user) {
   if (user.role !== "admin" || user.status !== "active") throw new ApiError(403, "Administrator access required.");
 }
 
@@ -272,6 +273,7 @@ export async function adminSetMember(env, user, { userId, plan, status }) {
   if (!result.meta?.changes) throw new ApiError(404, "Unknown user.");
   // A suspended member is signed out everywhere at once.
   if (status === "suspended") await env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(userId).run();
+  await recordAudit(env, user, "member.update", userId, { ...(plan !== undefined && { plan }), ...(status !== undefined && { status }) });
   return { userId, plan, status };
 }
 
@@ -296,5 +298,7 @@ export async function adminCreateCode(env, user, rawCode) {
     if (/UNIQUE/i.test(error.message)) throw new ApiError(409, "That code already exists.");
     throw error;
   }
+  // The code itself is a bearer secret, so the log keeps only its last 4 characters.
+  await recordAudit(env, user, "code.create", id, { codeEnding: code.slice(-4) });
   return codeJson(await env.DB.prepare("SELECT *, NULL AS used_by_name, NULL AS used_by_email FROM pro_access_codes WHERE id = ?").bind(id).first());
 }
