@@ -3664,3 +3664,33 @@ nav button .nav-badge {
     animation: none;
   }
 }
+
+/* ---- Offline mode ---- */
+.offline-bar {
+  position: fixed;
+  z-index: 55;
+  left: 50%;
+  bottom: calc(76px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  width: min(560px, calc(100vw - 24px));
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 13px;
+  border: 1px solid #6b5a2c;
+  border-radius: 12px;
+  background: #2a2412f2;
+  color: #f3dfa6;
+  font-size: 12.5px;
+  line-height: 1.35;
+  box-shadow: 0 10px 28px #0007;
+  pointer-events: none;
+}
+.offline-bar svg {
+  flex: none;
+}
+@media (min-width: 781px) {
+  .offline-bar {
+    bottom: 18px;
+  }
+}

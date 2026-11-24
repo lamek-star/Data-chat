@@ -35,7 +35,7 @@ export function createSyncQueue({
     const rows = pending;
     const body = JSON.stringify(rows);
     pending = null;
-    if (body === lastSent) return;
+    if (body === lastSent) return onSaved(); // the server already has exactly this
     inFlight = true;
     try {
       await send(rows);

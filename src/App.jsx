@@ -49,6 +49,7 @@ import {
 } from "./lib/records";
 import { encryptBackup, decryptBackup } from "./lib/backup";
 import { createSyncQueue } from "./cloud/syncQueue";
+import { clearSnapshot, lastUserId, loadSnapshot, markClean, mergeOfflineChanges, saveSnapshot } from "./cloud/localCache";
 import { CONTACT_ADDED_EVENT, OPEN_CHAT_EVENT, useMessaging } from "./useMessaging";
 import { lastMessageByContact, messagePreview, totalUnread, unreadByContact } from "./notify";
 import { NotificationsPanel } from "./NotificationsPanel";
@@ -577,34 +578,103 @@ function App() {
     }
   }, [toast]);
 
+  // ---------------------------------------------------------- offline --
+  // The member's data is kept on this device (IndexedDB) so DataChat opens
+  // with no internet. `offlineFor` = the member whose saved copy is shown
+  // while the server can't be reached.
+  const [offlineFor, setOfflineFor] = useState(null);
+  const [online, setOnline] = useState(() => navigator.onLine !== false);
+  const [serverUnreachable, setServerUnreachable] = useState(false);
+  const [sessionAttempt, setSessionAttempt] = useState(0);
+  const unsyncedRef = useRef(false); // changes the server hasn't accepted yet
+  const userRef = useRef(user);
+  userRef.current = user;
+
+  useEffect(() => {
+    const up = () => {
+      setOnline(true);
+      // Back online while showing the saved copy: connect to the server.
+      if (!cloudReadyRef.current) setSessionAttempt((n) => n + 1);
+    };
+    const down = () => setOnline(false);
+    window.addEventListener("online", up);
+    window.addEventListener("offline", down);
+    return () => {
+      window.removeEventListener("online", up);
+      window.removeEventListener("offline", down);
+    };
+  }, []);
+
+  // Open the saved copy straight away (no waiting for a slow network).
   useEffect(() => {
     if (!cloudConfigured) return;
     let active = true;
+    const id = lastUserId();
+    loadSnapshot(id).then((snapshot) => {
+      if (!active || !snapshot || userRef.current) return; // the server answered first
+      setDb(snapshot.db);
+      setOfflineFor(snapshot.userId);
+      unsyncedRef.current = snapshot.dirty;
+      setUser(snapshot.db.users[0]);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!cloudConfigured || cloudReadyRef.current) return;
+    let active = true;
+    let retry;
     getSession()
       .then((session) => {
         if (!active) return;
+        setServerUnreachable(false);
         if (session?.user) setCloudAuthUser(session.user);
+        else {
+          // Signed out on the server: never keep showing the saved copy.
+          const id = lastUserId();
+          if (id) clearSnapshot(id);
+          setOfflineFor(null);
+          setUser(null);
+        }
       })
-      .catch(() => {});
+      .catch(() => {
+        if (!active) return;
+        // No connection: stay on the saved copy and try again shortly.
+        setServerUnreachable(true);
+        retry = setTimeout(() => setSessionAttempt((n) => n + 1), 20000);
+      });
+    return () => {
+      active = false;
+      clearTimeout(retry);
+    };
+  }, [sessionAttempt]);
+
+  useEffect(() => {
+    if (!cloudConfigured) return;
     const subscription = onAuthStateChange((_event, session) => {
       setCloudAuthUser(session?.user || null);
       if (!session?.user) setUser(null);
     });
-    return () => {
-      active = false;
-      subscription?.unsubscribe?.();
-    };
+    return () => subscription?.unsubscribe?.();
   }, []);
 
   // Cloud data counts as loaded only for this account: nothing is uploaded
   // (and no message handling starts) before the member's own data is in.
   const [cloudReadyFor, setCloudReadyFor] = useState(null);
   const syncRef = useRef(null);
+  const userIdRef = useRef(null);
+  userIdRef.current = user?.id || null;
   if (cloudConfigured && !syncRef.current) {
     let warned = false;
     syncRef.current = createSyncQueue({
       send: (rows) => overwriteAppData(null, rows),
-      onSaved: () => (warned = false),
+      onSaved: () => {
+        warned = false;
+        unsyncedRef.current = false;
+        if (userIdRef.current) markClean(userIdRef.current);
+      },
       onError: (_error, failures) => {
         if (failures >= 2 && !warned) {
           warned = true;
@@ -617,22 +687,37 @@ function App() {
 
   useEffect(() => {
     if (!cloudConfigured || !cloudAuthUser) return;
+    if (cloudReadyRef.current && cloudReadyFor === cloudAuthUser.id) return; // already loaded
     let active = true;
-    setCloudReadyFor(null);
-    loadCloudDb(cloudAuthUser)
-      .then(({ cloudDb, fromStrangers }) => {
+    Promise.all([loadCloudDb(cloudAuthUser), loadSnapshot(cloudAuthUser.id)])
+      .then(([{ cloudDb, fromStrangers }, snapshot]) => {
         if (!active) return;
-        syncRef.current?.markSynced(serializeCloudRows(cloudDb, cloudAuthUser.id));
+        const serverRows = serializeCloudRows(cloudDb, cloudAuthUser.id);
+        syncRef.current?.markSynced(serverRows);
         strangersRef.current = fromStrangers;
-        setDb(cloudDb);
-        setUser(cloudDb.users[0]);
+        // Changes made offline win over the older server copy, then upload.
+        const next = snapshot?.dirty ? mergeOfflineChanges(snapshot.db, cloudDb) : cloudDb;
+        if (snapshot?.dirty) {
+          unsyncedRef.current = true;
+          syncRef.current?.schedule(serializeCloudRows(next, cloudAuthUser.id));
+        }
+        setDb(next);
+        setUser(next.users[0]);
+        setOfflineFor(null);
+        setServerUnreachable(false);
         setCloudReadyFor(cloudAuthUser.id);
       })
-      .catch((error) => setToast(`Cloud data load failed: ${error.message}`));
+      .catch((error) => {
+        if (!active) return;
+        if (error?.status === 0) {
+          setServerUnreachable(true); // keep the saved copy on screen
+          setTimeout(() => active && setSessionAttempt((n) => n + 1), 20000);
+        } else setToast(`Cloud data load failed: ${error.message}`);
+      });
     return () => {
       active = false;
     };
-  }, [cloudAuthUser]);
+  }, [cloudAuthUser?.id, sessionAttempt]);
 
   // Send pending uploads before the app goes to the background, and as soon
   // as the network comes back.
@@ -649,8 +734,21 @@ function App() {
   }, []);
 
   const cloudReady = cloudConfigured && cloudAuthUser && cloudReadyFor === cloudAuthUser.id && user?.id === cloudAuthUser.id;
+  const cloudReadyRef = useRef(false);
+  cloudReadyRef.current = Boolean(cloudReady);
+  const offlineView = cloudConfigured && !cloudReady && Boolean(user) && offlineFor === user?.id;
+  const dataReady = cloudReady || offlineView;
+
+  // Keep the saved copy up to date (a moment after each change).
+  useEffect(() => {
+    if (!cloudConfigured || !dataReady || !user?.id) return;
+    const timer = setTimeout(() => saveSnapshot(user.id, db, { dirty: unsyncedRef.current }), 500);
+    return () => clearTimeout(timer);
+  }, [db, dataReady, user?.id]);
+
   const messaging = useMessaging({
-    authUser: cloudReady ? cloudAuthUser : null,
+    // Offline, the outbox still keeps new messages and sends them later.
+    authUser: cloudReady ? cloudAuthUser : offlineView ? { id: user.id } : null,
     db,
     setDb,
     save: (fn) => save(fn),
@@ -660,7 +758,7 @@ function App() {
   // Once loaded: show messages still waiting in the outbox, and adopt
   // members who wrote before being added as contacts.
   useEffect(() => {
-    if (!cloudReady) return;
+    if (!dataReady) return;
     const waiting = messaging.pendingOutgoing();
     if (waiting.length)
       setDb((d) => {
@@ -668,10 +766,11 @@ function App() {
         const add = waiting.filter((m) => !known.has(m.id));
         return add.length ? { ...d, messages: [...d.messages, ...add] } : d;
       });
+    if (!cloudReady) return;
     const rows = strangersRef.current;
     strangersRef.current = [];
     rows.forEach((row) => messaging.receive(row, { initial: true }));
-  }, [cloudReady]);
+  }, [dataReady, cloudReady]);
 
   // Unread count in the tab title, like other chat apps.
   const unreadCounts = user ? unreadByContact(db.messages, user.id) : {};
@@ -736,7 +835,9 @@ function App() {
       const next = typeof fn === "function" ? fn(d) : fn;
       if (cloudConfigured) {
         // Coalesced, ordered, retried upload; never before this account's
-        // own data has loaded (it would overwrite it).
+        // own data has loaded (it would overwrite it). Offline, the change
+        // is kept on the device and uploaded once the server is reachable.
+        if (next !== d) unsyncedRef.current = true;
         if (user?.id && cloudReadyFor === user.id)
           syncRef.current?.schedule(serializeCloudRows(next, user.id));
       } else {
@@ -758,6 +859,16 @@ function App() {
   const props = { db, save, user: activeUser, setToast, messaging, unreadCounts };
   return (
     <div className="app">
+      {(offlineView || (cloudConfigured && !online)) && (
+        <div className="offline-bar" role="status">
+          <Icon name="WifiOff" size={15} />
+          <span>
+            {online && serverUnreachable === false && offlineView
+              ? "Connecting…"
+              : "Offline. Showing what's saved on this phone; changes and messages send when you're back online."}
+          </span>
+        </div>
+      )}
       <Sidebar page={page} setPage={setPage} user={activeUser} unread={unreadTotal} />
       <main>
         {page === "home" && (
@@ -789,7 +900,18 @@ function App() {
                 localStorage.setItem("dc-user", JSON.stringify(next));
             }}
             logout={() => {
-              if (cloudConfigured) cloudSignOut().catch(() => {});
+              if (cloudConfigured) {
+                cloudSignOut().catch(() => {});
+                // A shared phone keeps nothing private after sign-out.
+                clearSnapshot(activeUser.id);
+                try {
+                  localStorage.removeItem(`dc-outbox-${activeUser.id}`);
+                } catch {
+                  /* nothing stored */
+                }
+                setOfflineFor(null);
+                setCloudReadyFor(null);
+              }
               localStorage.removeItem("dc-user");
               setUser(null);
             }}

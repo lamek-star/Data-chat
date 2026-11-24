@@ -274,3 +274,37 @@ describe("unread counts and previews", () => {
     expect(messagePreview({ content: "a\n  b" })).toBe("a b");
   });
 });
+
+describe("offline changes after reconnecting", async () => {
+  const { mergeOfflineChanges } = await import("../../src/cloud/localCache.js");
+  it("keeps edits made offline and takes new messages from the server", () => {
+    const local = {
+      users: [{ id: "me" }],
+      records: [{ id: "TXN-OFFLINE" }, { id: "TXN-1", status: "Verified" }],
+      contacts: [{ id: "c1" }, { id: "c-new" }],
+      notifications: [],
+      accessCodes: [],
+      messages: [
+        { id: "m1", sender: "them", content: "old" },
+        { id: "queued", sender: "me", content: "written offline", deliveryStatus: "waiting" },
+      ],
+    };
+    const server = {
+      users: [{ id: "me", plan: "Pro" }],
+      records: [{ id: "TXN-1", status: "Pending" }],
+      contacts: [{ id: "c1" }],
+      notifications: [],
+      accessCodes: [],
+      messages: [
+        { id: "m1", sender: "them", content: "old" },
+        { id: "m2", sender: "them", content: "arrived while offline" },
+      ],
+    };
+    const merged = mergeOfflineChanges(local, server);
+    expect(merged.users).toEqual(server.users); // plan comes from the server
+    expect(merged.records.map((r) => r.id)).toEqual(["TXN-OFFLINE", "TXN-1"]);
+    expect(merged.records[1].status).toBe("Verified");
+    expect(merged.contacts.map((c) => c.id)).toEqual(["c1", "c-new"]);
+    expect(merged.messages.map((m) => m.id)).toEqual(["m1", "m2", "queued"]);
+  });
+});
