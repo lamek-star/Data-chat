@@ -349,6 +349,18 @@ header p,
   color: var(--muted);
   margin-top: 4px;
 }
+/* Contact name and phone on two lines in the chat header, never run together. */
+.chat-head > div:not([class]) {
+  min-width: 0;
+  flex: 1;
+}
+.chat-head > div:not([class]) b,
+.chat-head > div:not([class]) small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .online {
   margin-left: auto;
   width: 8px;
@@ -360,6 +372,7 @@ header p,
 .chat {
   display: grid;
   grid-template-rows: 76px 1fr 78px;
+  grid-template-columns: minmax(0, 1fr);
   height: 100vh;
   min-width: 0;
 }
@@ -384,6 +397,12 @@ header p,
   background-image: radial-gradient(#30405a 1px, transparent 1px);
   background-size: 28px 28px;
   scroll-behavior: smooth;
+}
+/* Messages keep their natural height: in a scrolling flex column a child
+   with overflow:hidden would otherwise shrink to nothing (transaction cards
+   collapsed to a 1px line once a chat had enough messages). */
+.messages > * {
+  flex-shrink: 0;
 }
 .bubble {
   max-width: min(72%, 620px);
@@ -550,7 +569,7 @@ header p,
 .transaction-message:hover .transaction-message-body,
 .transaction-message:focus-within .transaction-message-body,
 .transaction-message.expanded .transaction-message-body {
-  max-height: 260px;
+  max-height: 480px;
   padding-block: 14px;
   opacity: 1;
 }
@@ -3164,7 +3183,7 @@ dd {
   .transaction-message-body {
     grid-template-columns: 92px 1fr;
     gap: 10px;
-    padding: 10px;
+    padding-inline: 10px;
   }
   .transaction-message-body img {
     width: 92px;
@@ -3201,7 +3220,7 @@ dd {
   }
   .transaction-message.expanded .transaction-message-body,
   .transaction-message:focus-within .transaction-message-body {
-    max-height: 260px;
+    max-height: 480px;
     padding-block: 14px;
     opacity: 1;
   }

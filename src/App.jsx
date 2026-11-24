@@ -2491,11 +2491,17 @@ function Home({ db, save, user, setToast, setPage }) {
       setRecording(true);
     } catch (error) { setToast(`Microphone unavailable: ${error.message}`); }
   };
+  const scrolledChatRef = useRef(null);
   useEffect(() => {
-    messagesRef.current?.scrollTo({
-      top: messagesRef.current.scrollHeight,
-      behavior: "smooth",
+    // Opening a chat jumps straight to the newest message; a new message in
+    // the open chat glides. Wait a frame so cards and QR codes have laid out.
+    const switched = scrolledChatRef.current !== selected;
+    scrolledChatRef.current = selected;
+    const frame = requestAnimationFrame(() => {
+      const el = messagesRef.current;
+      el?.scrollTo({ top: el.scrollHeight, behavior: switched ? "instant" : "smooth" });
     });
+    return () => cancelAnimationFrame(frame);
   }, [msgs.length, selected]);
   return (
     <div className="home">
@@ -3463,7 +3469,25 @@ function TransactionChatCard({ message, db, save, user, setToast }) {
   const [qr, setQr] = useState("");
   const [expanded, setExpanded] = useState(false);
   const [keyVisible, setKeyVisible] = useState(false);
+  const cardRef = useRef(null);
   const data = message.transaction;
+  useEffect(() => {
+    if (!expanded) return;
+    // Once the details have opened, bring the whole card into view so a card
+    // near the bottom of the chat doesn't open off-screen.
+    const card = cardRef.current;
+    if (!card) return;
+    const reveal = () => card.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    const onEnd = (event) => {
+      if (event.propertyName === "max-height") reveal();
+    };
+    card.addEventListener("transitionend", onEnd);
+    const fallback = setTimeout(reveal, 400); // reduced motion: no transition
+    return () => {
+      card.removeEventListener("transitionend", onEnd);
+      clearTimeout(fallback);
+    };
+  }, [expanded]);
   const existingRecord = db.records.find(
     (x) =>
       x.owner === user.id &&
@@ -3514,9 +3538,9 @@ function TransactionChatCard({ message, db, save, user, setToast }) {
   };
   return (
     <motion.article
+      ref={cardRef}
       className={`transaction-message ${message.sender} ${expanded ? "expanded" : ""}`}
       tabIndex="0"
-      layout
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.2 }}
