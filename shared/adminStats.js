@@ -38,7 +38,9 @@ export async function adminStats(env, user, now = Date.now()) {
     ).bind(now).first(),
     db.prepare("SELECT created_at FROM users WHERE created_at >= ? AND role <> 'admin'").bind(sinceWeeks).all(),
     db.prepare("SELECT created_at FROM direct_messages WHERE created_at >= ?").bind(startOfDay(now) + DAY - 14 * DAY).all(),
-    db.prepare("SELECT COUNT(DISTINCT user_id) AS n FROM sessions WHERE last_seen_at >= ?").bind(now - 7 * DAY).first(),
+    db.prepare(
+      "SELECT COUNT(DISTINCT s.user_id) AS n FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.last_seen_at >= ? AND u.role <> 'admin'",
+    ).bind(now - 7 * DAY).first(),
     db.prepare(
       "SELECT id, display_name, email, pro_until FROM users WHERE role <> 'admin' AND plan <> 'Pro' AND pro_until > ? AND pro_until <= ? AND status = 'active' ORDER BY pro_until ASC LIMIT 8",
     ).bind(now, now + 14 * DAY).all(),

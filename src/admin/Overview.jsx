@@ -8,7 +8,10 @@ const greeting = (date) => {
   const h = date.getHours();
   return h < 5 ? "Good evening" : h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening";
 };
-const firstName = (user) => (user.name || user.email || "").split(/[\s@]/)[0];
+const firstName = (user) => {
+  const name = (user.name || user.email || "").split(/[\s@]/)[0];
+  return name.charAt(0).toUpperCase() + name.slice(1);
+};
 const sum = (series) => series.reduce((n, s) => n + s.count, 0);
 const daysUntil = (iso) => Math.max(0, Math.ceil((Date.parse(iso) - Date.now()) / 86400000));
 const COUNTRY_COLORS = ["#f2a679", "#e8c37a", "#7fc8b4", "#8fa8f0", "#c99be6", "#6b6560"];
