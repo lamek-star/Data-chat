@@ -34,6 +34,11 @@ ANDROID_SIGNING_SHA256 = "3A:1E:C3:1A:BD:CA:BB:0F:25:49:11:62:55:7D:0D:33:87:65:
 # Admin dashboard host (shared/adminHost.js). Optional Cloudflare Access check:
 # set ACCESS_TEAM_DOMAIN and ACCESS_AUD once Access protects that host.
 ADMIN_HOST = "admin.datachat.harmongt.uk"
+# Cloudflare Access protects the admin host (application "DataChat Admin",
+# policy "Admins only"); the Worker also checks Access's signed token on every
+# admin request. Both values are public identifiers, not secrets.
+ACCESS_TEAM_DOMAIN = "https://super-shape-82d2.cloudflareaccess.com"
+ACCESS_AUD = "805e025e473d86fa65bcad8b867b3f8e15810cad49feff328978d6f76f699ef4"
 # Secrets: set with `wrangler secret put <NAME>`, never in this file:
 #   AUTH_SECRET, STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET
 
