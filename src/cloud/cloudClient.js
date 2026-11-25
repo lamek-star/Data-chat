@@ -326,31 +326,6 @@ export async function redeemProAccessCode(code) {
 // ----------------------------------------------------------------- admin --
 // The server re-checks the admin role on every call.
 
-export async function isCloudAdmin() {
-  const user = await refreshUser();
-  return user.role === "admin" && user.status === "active";
-}
-
-export async function createCloudAccessCode(code) {
-  return (await api("/api/admin/codes", { method: "POST", body: { code } })).code;
-}
-
-export async function listCloudAccessCodes() {
-  return (await api("/api/admin/codes")).codes;
-}
-
-export async function listCloudMembers() {
-  return (await api("/api/admin/members")).members;
-}
-
-export async function setCloudMemberPlan(userId, plan) {
-  return api("/api/admin/members", { method: "PATCH", body: { userId, plan } });
-}
-
-export async function setCloudMemberStatus(userId, status) {
-  return api("/api/admin/members", { method: "PATCH", body: { userId, status } });
-}
-
 // ------------------------------------------- passkeys (fingerprint unlock) --
 // The browser shows the system fingerprint / face / PIN prompt; the server
 // verifies the result. Nothing biometric ever leaves the device.
@@ -432,18 +407,6 @@ export async function submitReport({ reportedId, reason, details, includeMessage
 
 export async function listMyReports() {
   return (await api("/api/reports")).reports;
-}
-
-export async function listAdminReports(status) {
-  return (await api(`/api/admin/reports${status ? `?status=${encodeURIComponent(status)}` : ""}`)).reports;
-}
-
-export async function reviewAdminReport(id, status, note = "") {
-  return api("/api/admin/reports", { method: "PATCH", body: { id, status, note } });
-}
-
-export async function listAdminAudit() {
-  return (await api("/api/admin/audit")).events;
 }
 
 /** Everything DataChat holds about the signed-in member, as JSON. */

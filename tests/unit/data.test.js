@@ -2,7 +2,7 @@
 // Supabase row-level-security tests: every rule that used to live in the
 // database is now checked here against the Worker.
 import { beforeEach, describe, expect, it } from "vitest";
-import { call, makeEnv, setRole, signIn } from "./helpers.js";
+import { adminCall, adminSignIn, call, makeEnv, setRole, signIn } from "./helpers.js";
 
 let env, ana, ben, admin;
 beforeEach(async () => {
@@ -11,13 +11,16 @@ beforeEach(async () => {
   ben = await signIn(env, "ben@example.test", { name: "Ben", username: "ben", phone: "+251900000002" });
   admin = await signIn(env, "boss@example.test", { name: "Boss" });
   setRole(env, "boss@example.test", "admin");
+  admin.adminCookie = await adminSignIn(env, "boss@example.test");
 });
-const as = (who, path, opts = {}) => call(env, path, { ...opts, token: who.token });
+// Admin routes live on the admin host with admin sessions (shared/adminHost.js).
+const as = (who, path, opts = {}) =>
+  path.startsWith("/api/admin/") ? adminCall(env, path, { ...opts, cookie: who.adminCookie }) : call(env, path, { ...opts, token: who.token });
 const body = async (r) => r.json();
 
 describe("signed-out requests", () => {
   it("are refused on every member route", async () => {
-    for (const [method, path] of [["GET", "/api/data"], ["PUT", "/api/data"], ["GET", "/api/profiles?ids=x"], ["PATCH", "/api/profile"], ["GET", "/api/messages"], ["POST", "/api/messages"], ["POST", "/api/messages/read"], ["POST", "/api/pro/redeem"], ["GET", "/api/admin/members"], ["GET", "/api/admin/codes"]])
+    for (const [method, path] of [["GET", "/api/data"], ["PUT", "/api/data"], ["GET", "/api/profiles?ids=x"], ["PATCH", "/api/profile"], ["GET", "/api/messages"], ["POST", "/api/messages"], ["POST", "/api/messages/read"], ["POST", "/api/pro/redeem"]])
       expect((await call(env, path, { method, body: method === "GET" ? undefined : {} })).status, `${method} ${path}`).toBe(401);
   });
 });
@@ -157,8 +160,8 @@ describe("direct messages", () => {
 
 describe("Pro access codes", () => {
   it("can be created and listed only by admins", async () => {
-    expect((await as(ana, "/api/admin/codes", { method: "POST", body: { code: "SELF-MADE-CODE-1234" } })).status).toBe(403);
-    expect((await as(ana, "/api/admin/codes")).status).toBe(403);
+    expect((await as(ana, "/api/admin/codes", { method: "POST", body: { code: "SELF-MADE-CODE-1234" } })).status).toBe(401);
+    expect((await as(ana, "/api/admin/codes")).status).toBe(401);
     expect((await as(admin, "/api/admin/codes", { method: "POST", body: { code: "SHORT" } })).status).toBe(400);
     const created = (await body(await as(admin, "/api/admin/codes", { method: "POST", body: { code: "dcp-test-0001-abcd" } }))).code;
     expect(created).toMatchObject({ code: "DCP-TEST-0001-ABCD", status: "available" });
@@ -178,8 +181,8 @@ describe("Pro access codes", () => {
 
 describe("admin members", () => {
   it("are listed and changed only by admins", async () => {
-    expect((await as(ana, "/api/admin/members")).status).toBe(403);
-    expect((await as(ana, "/api/admin/members", { method: "PATCH", body: { userId: ana.user.id, plan: "Pro" } })).status).toBe(403);
+    expect((await as(ana, "/api/admin/members")).status).toBe(401);
+    expect((await as(ana, "/api/admin/members", { method: "PATCH", body: { userId: ana.user.id, plan: "Pro" } })).status).toBe(401);
     const members = (await body(await as(admin, "/api/admin/members"))).members;
     expect(members.map((m) => m.email).sort()).toEqual(["ana@example.test", "ben@example.test", "boss@example.test"]);
   });

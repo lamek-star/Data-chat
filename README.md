@@ -60,13 +60,39 @@ Never give a secret a `VITE_` prefix; anything prefixed `VITE_` is shipped to ev
 
 ## Administration
 
-The administrator portal (`/admin.html`) signs in with an emailed code like the app. Make your account an administrator once, after you have signed in to the app at least once (replace the email):
+The admin dashboard has its own address: **https://admin.datachat.harmongt.uk**
+(the old `/admin` page on the app redirects there). Make an account an
+administrator once, after it has signed in to the app at least once:
 
 ```bash
 npx wrangler d1 execute datachat --remote --command "UPDATE users SET role='admin' WHERE email='you@example.com'"
 ```
 
-The Worker re-checks the admin role on every administrator call. The portal lists members, changes their plan, suspends or reactivates them, and manages one-time Pro codes. It intentionally has no interface for members' messages, contacts, financial records, transaction keys, or encrypted backup contents. Suspending a member signs them out everywhere and blocks all of their requests; administrators cannot change their own status.
+How it is protected (`shared/adminHost.js`, tests in `tests/unit/admin-host.test.js`):
+
+- Admin routes exist only on the admin host; the app host answers 404 for `/api/admin/*`.
+- Sign-in codes are emailed only to active administrators (everyone gets the same
+  answer), and signing in there never creates an account.
+- Separate admin sessions: a host-only `__Host-dc_admin` cookie (HttpOnly, Secure,
+  SameSite=Strict), 30 minutes idle and 12 hours at most. Member sessions can't open
+  the dashboard and the admin cookie means nothing to the app.
+- Writes must be JSON from the dashboard's own origin; strict CSP, `frame-ancestors
+  'none'`, `no-store`, `noindex`. No service worker on that host.
+- Every sign-in and change is in the activity log; numbers are counts only, never
+  messages, contacts, records or keys.
+
+### Optional second lock: Cloudflare Access
+
+Put Cloudflare Access (Zero Trust, free for up to 50 users) in front of the admin host
+so Cloudflare asks for a second sign-in before the page even loads:
+
+1. Cloudflare dashboard → Zero Trust → Access → Applications → Add → Self-hosted.
+2. Domain `admin.datachat.harmongt.uk`; policy: Allow, Emails = your admin email(s).
+3. Copy the application's **AUD tag** and your team domain (e.g. `https://yourteam.cloudflareaccess.com`).
+4. Add them to `wrangler.toml` `[vars]` as `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD`, then deploy.
+
+With both set, the Worker also checks Cloudflare's signed token on every admin request,
+so a request that gets around Access is still refused.
 
 ## Testing
 

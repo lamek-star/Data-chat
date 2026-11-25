@@ -1,6 +1,6 @@
 // Safety reports, the admin audit log, account export and account deletion.
 import { beforeEach, describe, expect, it } from "vitest";
-import { call, makeEnv, setRole, signIn } from "./helpers.js";
+import { adminCall, adminSignIn, call, makeEnv, setRole, signIn } from "./helpers.js";
 
 let env, alice, bob, admin;
 const body = (r) => r.json();
@@ -16,6 +16,7 @@ beforeEach(async () => {
   bob = await signIn(env, "bob@example.com", { name: "Bob" });
   admin = await signIn(env, "admin@example.com", { name: "Admin" });
   setRole(env, "admin@example.com", "admin");
+  admin.adminCookie = await adminSignIn(env, "admin@example.com");
 });
 
 describe("safety reports", () => {
@@ -31,7 +32,7 @@ describe("safety reports", () => {
     expect(r.status).toBe(200);
     expect((await body(r)).report.evidenceCount).toBe(2);
 
-    const list = await body(await call(env, "/api/admin/reports", { token: admin.token }));
+    const list = await body(await adminCall(env, "/api/admin/reports", { cookie: admin.adminCookie }));
     expect(list.reports).toHaveLength(1);
     const [report] = list.reports;
     expect(report.reporter.email).toBe("alice@example.com");
@@ -42,7 +43,7 @@ describe("safety reports", () => {
   it("keeps voice notes out of the evidence", async () => {
     await call(env, "/api/messages", { method: "POST", token: bob.token, body: { id: crypto.randomUUID(), recipientId: alice.user.id, payload: { content: "Voice message", voiceUrl: "data:audio/webm;base64,AAAA" } } });
     await call(env, "/api/reports", { method: "POST", token: alice.token, body: { reportedId: bob.user.id, reason: "Harassment or threats", includeMessages: true } });
-    const [report] = (await body(await call(env, "/api/admin/reports", { token: admin.token }))).reports;
+    const [report] = (await body(await adminCall(env, "/api/admin/reports", { cookie: admin.adminCookie }))).reports;
     expect(report.evidence[0].text).toBe("[voice note]");
     expect(JSON.stringify(report.evidence)).not.toContain("base64");
   });
@@ -72,33 +73,34 @@ describe("safety reports", () => {
 
   it("only admins can list or review reports, and reviews are audited", async () => {
     const { report } = await body(await call(env, "/api/reports", { method: "POST", token: alice.token, body: { reportedId: bob.user.id, reason: "Spam" } }));
-    expect((await call(env, "/api/admin/reports", { token: alice.token })).status).toBe(403);
-    expect((await call(env, "/api/admin/reports", { method: "PATCH", token: bob.token, body: { id: report.id, status: "dismissed" } })).status).toBe(403);
+    // Members have no admin session at all, so the admin host refuses them.
+    expect((await adminCall(env, "/api/admin/reports", { cookie: alice.adminCookie })).status).toBe(401);
+    expect((await adminCall(env, "/api/admin/reports", { method: "PATCH", cookie: bob.adminCookie, body: { id: report.id, status: "dismissed" } })).status).toBe(401);
 
-    const r = await call(env, "/api/admin/reports", { method: "PATCH", token: admin.token, body: { id: report.id, status: "actioned", note: "suspended" } });
+    const r = await adminCall(env, "/api/admin/reports", { method: "PATCH", cookie: admin.adminCookie, body: { id: report.id, status: "actioned", note: "suspended" } });
     expect(r.status).toBe(200);
-    expect((await body(await call(env, "/api/admin/reports?status=open", { token: admin.token }))).reports).toHaveLength(0);
+    expect((await body(await adminCall(env, "/api/admin/reports?status=open", { cookie: admin.adminCookie }))).reports).toHaveLength(0);
     expect((await body(await call(env, "/api/reports", { token: alice.token }))).reports[0].status).toBe("actioned");
 
-    const { events } = await body(await call(env, "/api/admin/audit", { token: admin.token }));
+    const { events } = await body(await adminCall(env, "/api/admin/audit", { cookie: admin.adminCookie }));
     expect(events[0]).toMatchObject({ action: "report.review", targetId: report.id, adminEmail: "admin@example.com", detail: { status: "actioned" } });
   });
 });
 
 describe("admin audit log", () => {
   it("records member changes and new codes, never the full code", async () => {
-    await call(env, "/api/admin/members", { method: "PATCH", token: admin.token, body: { userId: bob.user.id, plan: "Pro" } });
-    await call(env, "/api/admin/codes", { method: "POST", token: admin.token, body: { code: "CASH-ABCDEF-123456" } });
-    const { events } = await body(await call(env, "/api/admin/audit", { token: admin.token }));
-    expect(events.map((e) => e.action).sort()).toEqual(["code.create", "member.update"]);
+    await adminCall(env, "/api/admin/members", { method: "PATCH", cookie: admin.adminCookie, body: { userId: bob.user.id, plan: "Pro" } });
+    await adminCall(env, "/api/admin/codes", { method: "POST", cookie: admin.adminCookie, body: { code: "CASH-ABCDEF-123456" } });
+    const { events } = await body(await adminCall(env, "/api/admin/audit", { cookie: admin.adminCookie }));
+    expect(events.map((e) => e.action).filter((a) => a !== "admin.signin").sort()).toEqual(["code.create", "member.update"]);
     expect(events.find((e) => e.action === "member.update")).toMatchObject({ targetId: bob.user.id, detail: { plan: "Pro" } });
     expect(JSON.stringify(events)).not.toContain("CASH-ABCDEF-123456");
     expect(events.find((e) => e.action === "code.create").detail.codeEnding).toBe("3456");
   });
 
   it("is admin only", async () => {
-    expect((await call(env, "/api/admin/audit", { token: alice.token })).status).toBe(403);
-    expect((await call(env, "/api/admin/audit")).status).toBe(401);
+    expect((await adminCall(env, "/api/admin/audit", { cookie: alice.adminCookie })).status).toBe(401);
+    expect((await adminCall(env, "/api/admin/audit")).status).toBe(401);
   });
 });
 
@@ -160,9 +162,10 @@ describe("account deletion", () => {
 
   it("the audit log outlives a deleted admin", async () => {
     setRole(env, "bob@example.com", "admin");
-    await call(env, "/api/admin/members", { method: "PATCH", token: admin.token, body: { userId: alice.user.id, plan: "Pro" } });
+    bob.adminCookie = await adminSignIn(env, "bob@example.com");
+    await adminCall(env, "/api/admin/members", { method: "PATCH", cookie: admin.adminCookie, body: { userId: alice.user.id, plan: "Pro" } });
     await call(env, "/api/account/delete", { method: "POST", token: admin.token, body: { confirmEmail: "admin@example.com" } });
-    const { events } = await body(await call(env, "/api/admin/audit", { token: bob.token }));
+    const { events } = await body(await adminCall(env, "/api/admin/audit", { cookie: bob.adminCookie }));
     expect(events[0]).toMatchObject({ adminId: null, adminEmail: "admin@example.com", action: "member.update" });
   });
 });

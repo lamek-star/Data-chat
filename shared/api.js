@@ -24,10 +24,6 @@ import {
 } from "./auth.js";
 import {
   ApiError,
-  adminCreateCode,
-  adminListCodes,
-  adminListMembers,
-  adminSetMember,
   findProfiles,
   grantPro,
   listMessages,
@@ -36,15 +32,13 @@ import {
   readAvatar,
   redeemCode,
   replaceData,
-  requireAdmin,
   saveProfilePhoto,
   sendMessage,
   updateProfile,
 } from "./data.js";
 import { requestLocation } from "./email.js";
-import { listAudit } from "./audit.js";
 import { deleteAccount, exportAccount } from "./account.js";
-import { adminListReports, adminReviewReport, createReport, listMyReports } from "./safety.js";
+import { createReport, listMyReports } from "./safety.js";
 import {
   createSeal,
   listPasskeys,
@@ -146,19 +140,11 @@ async function memberRoutes(request, env, url, user) {
   if (pathname === "/api/messages" && m === "POST") return json(request, env, { message: await sendMessage(env, user, await readJson(request)) });
   if (pathname === "/api/messages/read" && m === "POST") return json(request, env, await markRead(env, user, (await readJson(request)).ids));
   if (pathname === "/api/pro/redeem" && m === "POST") return json(request, env, await redeemCode(env, user, (await readJson(request)).code));
-  if (pathname === "/api/admin/members" && m === "GET") return json(request, env, { members: await adminListMembers(env, user) });
-  if (pathname === "/api/admin/members" && m === "PATCH") return json(request, env, await adminSetMember(env, user, await readJson(request)));
-  if (pathname === "/api/admin/codes" && m === "GET") return json(request, env, { codes: await adminListCodes(env, user) });
-  if (pathname === "/api/admin/codes" && m === "POST") return json(request, env, { code: await adminCreateCode(env, user, (await readJson(request)).code) });
-  // Safety reports, the admin audit log, and the member's own account.
+  // Admin routes are not here: they exist only on the admin dashboard's own
+  // host, with separate admin sessions (shared/adminHost.js).
+  // Safety reports and the member's own account.
   if (pathname === "/api/reports" && m === "POST") return json(request, env, { report: await createReport(env, user, await readJson(request)) });
   if (pathname === "/api/reports" && m === "GET") return json(request, env, { reports: await listMyReports(env, user) });
-  if (pathname === "/api/admin/reports" && m === "GET") return json(request, env, { reports: await adminListReports(env, user, url.searchParams.get("status")) });
-  if (pathname === "/api/admin/reports" && m === "PATCH") return json(request, env, await adminReviewReport(env, user, await readJson(request)));
-  if (pathname === "/api/admin/audit" && m === "GET") {
-    requireAdmin(user);
-    return json(request, env, { events: await listAudit(env, url.searchParams.get("limit")) });
-  }
   if (pathname === "/api/account/export" && m === "GET")
     return json(request, env, await exportAccount(env, user), 200, { "Cache-Control": "no-store" });
   if (pathname === "/api/account/delete" && m === "POST") {
@@ -277,7 +263,7 @@ export async function handleApi(request, env, deps = {}) {
       return json(request, env, { url: session.url });
     }
 
-    const known = /^\/api\/(data|profiles?|profile\/photo|messages(\/read)?|pro\/redeem|admin\/(members|codes|reports|audit)|reports|account\/(export|delete)|passkeys(\/register\/(options|verify)|\/remove)?|sealed(\/open(\/options)?)?)$/.test(url.pathname);
+    const known = /^\/api\/(data|profiles?|profile\/photo|messages(\/read)?|pro\/redeem|reports|account\/(export|delete)|passkeys(\/register\/(options|verify)|\/remove)?|sealed(\/open(\/options)?)?)$/.test(url.pathname);
     if (known) {
       if (!user) return json(request, env, { error: "Sign in to continue." }, 401);
       const response = await memberRoutes(request, env, url, user);

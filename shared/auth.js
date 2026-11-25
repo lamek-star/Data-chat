@@ -61,7 +61,7 @@ async function hmac(secret, message) {
   return hex(await crypto.subtle.sign("HMAC", key, encoder.encode(message)));
 }
 
-const sha256 = async (text) => hex(await crypto.subtle.digest("SHA-256", encoder.encode(text)));
+export const sha256 = async (text) => hex(await crypto.subtle.digest("SHA-256", encoder.encode(text)));
 
 function sameHex(a, b) {
   if (typeof a !== "string" || typeof b !== "string" || a.length !== b.length) return false;
@@ -70,7 +70,7 @@ function sameHex(a, b) {
   return diff === 0;
 }
 
-function requireConfig(env) {
+export function requireConfig(env) {
   if (!env.DB) throw new AuthError(503, "Sign-in is not configured on the server (no database).");
   if (!env.AUTH_SECRET || String(env.AUTH_SECRET).length < 32)
     throw new AuthError(503, "Sign-in is not configured on the server (AUTH_SECRET).");
@@ -142,15 +142,21 @@ async function sendCodeEmail(env, email, code, location) {
 export async function startEmailLogin(env, { email: rawEmail, ip = "unknown", location = "" }, now = Date.now()) {
   requireConfig(env);
   const email = normalizeEmail(rawEmail);
+  await issueLoginCode(env, email, { ip, location }, now);
+  return { sent: true };
+}
+
+/** Rate-limited: stores a fresh one-time code for this address and emails it. */
+export async function issueLoginCode(env, email, { ip = "unknown", location = "", send = true } = {}, now = Date.now()) {
   if (!(await allow(env, `start:ip:${ip}`, LIMITS.startPerIp, now)) || !(await allow(env, `start:email:${email}`, LIMITS.startPerEmail, now)))
     throw new AuthError(429, "Too many codes requested. Wait a while and try again.");
+  if (!send) return; // counted against the limits, but nothing is sent
   const code = randomDigits(8);
   await env.DB.prepare(
     "INSERT INTO login_codes (email, code_hash, expires_at, attempts, created_at) VALUES (?, ?, ?, 0, ?) " +
       "ON CONFLICT(email) DO UPDATE SET code_hash = excluded.code_hash, expires_at = excluded.expires_at, attempts = 0, created_at = excluded.created_at",
   ).bind(email, await hmac(env.AUTH_SECRET, `${email}:${code}`), now + CODE_TTL_MS, now).run();
   await sendCodeEmail(env, email, code, location);
-  return { sent: true };
 }
 
 function newContactCode() {
@@ -220,6 +226,18 @@ export const publicUser = (row, now = Date.now()) => {
 /** Step 2: check the code and open a session. Creates the account on first sign-in. */
 export async function verifyEmailLogin(env, { email: rawEmail, code: rawCode, profile, ip = "unknown" }, now = Date.now()) {
   requireConfig(env);
+  const email = await consumeLoginCode(env, rawEmail, rawCode, ip, now);
+  const user = await findOrCreateUser(env, email, profile, now);
+  if (user.status === "suspended") throw new AuthError(403, "This account is suspended. Contact support.");
+  const token = base64url(crypto.getRandomValues(new Uint8Array(32)));
+  await env.DB.prepare(
+    "INSERT INTO sessions (token_hash, user_id, expires_at, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?)",
+  ).bind(await sha256(token), user.id, now + SESSION_TTL_MS, now, now).run();
+  return { token, user: publicUser(user), expiresAt: now + SESSION_TTL_MS };
+}
+
+/** Checks and uses up the emailed code (single use, 5 tries). Returns the email. */
+export async function consumeLoginCode(env, rawEmail, rawCode, ip = "unknown", now = Date.now()) {
   const email = normalizeEmail(rawEmail);
   const code = String(rawCode ?? "").replace(/\D/g, "");
   if (!(await allow(env, `verify:ip:${ip}`, LIMITS.verifyPerIp, now)))
@@ -238,15 +256,10 @@ export async function verifyEmailLogin(env, { email: rawEmail, code: rawCode, pr
   // Single use: delete before anything else can reuse it.
   const consumed = await env.DB.prepare("DELETE FROM login_codes WHERE email = ? AND code_hash = ?").bind(email, pending.code_hash).run();
   if (!consumed.meta?.changes) throw wrong;
-
-  const user = await findOrCreateUser(env, email, profile, now);
-  if (user.status === "suspended") throw new AuthError(403, "This account is suspended. Contact support.");
-  const token = base64url(crypto.getRandomValues(new Uint8Array(32)));
-  await env.DB.prepare(
-    "INSERT INTO sessions (token_hash, user_id, expires_at, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?)",
-  ).bind(await sha256(token), user.id, now + SESSION_TTL_MS, now, now).run();
-  return { token, user: publicUser(user), expiresAt: now + SESSION_TTL_MS };
+  return email;
 }
+
+export const newSessionToken = () => base64url(crypto.getRandomValues(new Uint8Array(32)));
 
 function sessionToken(request) {
   const header = request.headers.get("Authorization") || "";
