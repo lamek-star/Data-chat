@@ -871,6 +871,8 @@ function App() {
       )}
       <Sidebar page={page} setPage={setPage} user={activeUser} unread={unreadTotal} />
       <main>
+        {/* Pages fade in gently on change (opacity only, so fixed elements inside stay put). */}
+        <div className="page-stage" key={page}>
         {page === "home" && (
           <Home {...props} setPage={setPage} pendingAdd={pendingAdd} clearPendingAdd={clearPendingAdd} />
         )}{" "}
@@ -917,6 +919,7 @@ function App() {
             }}
           />
         )}
+        </div>
       </main>
       <MobileNav page={page} setPage={setPage} user={activeUser} unread={unreadTotal} />
       {messaging.banner && (
@@ -1428,10 +1431,15 @@ function Sidebar({ page, setPage, user, unread = 0 }) {
         <b>DataChat</b>
       </div>
       <nav>
+        {/* Gold pill that slides to the active page (like the admin dashboard). */}
+        {visibleNav.some(([p]) => p === page) && (
+          <span className="nav-pill" aria-hidden="true" style={{ transform: `translateY(${visibleNav.findIndex(([p]) => p === page) * 55}px)` }} />
+        )}
         {visibleNav.map(([p, i, l]) => (
           <button
             key={p}
             className={page === p ? "active" : ""}
+            aria-current={page === p ? "page" : undefined}
             onClick={() => setPage(p)}
           >
             <Icon name={i} />
@@ -1475,11 +1483,15 @@ function MobileNav({ page, setPage, user, unread = 0 }) {
       ? nav.filter(([p]) => p === "admin" || p === "settings")
       : nav.filter(([p]) => p !== "reports" && p !== "admin");
   return (
-    <div className="mobile-nav">
+    <div className="mobile-nav" style={{ "--n": mobileNav.length }}>
+      {mobileNav.some(([p]) => p === page) && (
+        <span className="mobile-pill" aria-hidden="true" style={{ transform: `translateX(${mobileNav.findIndex(([p]) => p === page) * 100}%)` }} />
+      )}
       {mobileNav.map(([p, i, l]) => (
         <button
           key={p}
           className={page === p ? "active" : ""}
+          aria-current={page === p ? "page" : undefined}
           onClick={() => setPage(p)}
         >
           <Icon name={i} />
