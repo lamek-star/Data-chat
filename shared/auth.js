@@ -56,14 +56,14 @@ function randomDigits(length) {
   return out;
 }
 
-async function hmac(secret, message) {
+export async function hmac(secret, message) {
   const key = await crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   return hex(await crypto.subtle.sign("HMAC", key, encoder.encode(message)));
 }
 
 export const sha256 = async (text) => hex(await crypto.subtle.digest("SHA-256", encoder.encode(text)));
 
-function sameHex(a, b) {
+export function sameHex(a, b) {
   if (typeof a !== "string" || typeof b !== "string" || a.length !== b.length) return false;
   let diff = 0;
   for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
@@ -77,7 +77,7 @@ export function requireConfig(env) {
 }
 
 // Fixed-window counter. Returns false when the limit is reached.
-async function allow(env, key, [limit, windowMs], now) {
+export async function allow(env, key, [limit, windowMs], now) {
   const row = await env.DB.prepare("SELECT window_start, count FROM rate_limits WHERE key = ?").bind(key).first();
   if (!row || now - row.window_start >= windowMs) {
     await env.DB.prepare(
@@ -220,15 +220,24 @@ export const publicUser = (row, now = Date.now()) => {
     role: row.role,
     status: row.status,
     createdAt: row.created_at,
+    hasPassword: Boolean(row.password_hash),
   };
 };
 
 /** Step 2: check the code and open a session. Creates the account on first sign-in. */
-export async function verifyEmailLogin(env, { email: rawEmail, code: rawCode, profile, ip = "unknown" }, now = Date.now()) {
+export async function verifyEmailLogin(env, { email: rawEmail, code: rawCode, profile, ip = "unknown", passwordKey, setPassword }, now = Date.now()) {
   requireConfig(env);
   const email = await consumeLoginCode(env, rawEmail, rawCode, ip, now);
-  const user = await findOrCreateUser(env, email, profile, now);
+  let user = await findOrCreateUser(env, email, profile, now);
   if (user.status === "suspended") throw new AuthError(403, "This account is suspended. Contact support.");
+  // Sign-up chooses a password here; an existing account keeps its own
+  // (changing it goes through Settings or "Forgot password").
+  if (passwordKey && !user.password_hash && setPassword) user = await setPassword(env, user, passwordKey, now);
+  return createSession(env, user, now);
+}
+
+/** Opens a 30-day member session for an already-verified user. */
+export async function createSession(env, user, now = Date.now()) {
   const token = base64url(crypto.getRandomValues(new Uint8Array(32)));
   await env.DB.prepare(
     "INSERT INTO sessions (token_hash, user_id, expires_at, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?)",
@@ -261,7 +270,7 @@ export async function consumeLoginCode(env, rawEmail, rawCode, ip = "unknown", n
 
 export const newSessionToken = () => base64url(crypto.getRandomValues(new Uint8Array(32)));
 
-function sessionToken(request) {
+export function sessionToken(request) {
   const header = request.headers.get("Authorization") || "";
   if (header.startsWith("Bearer ")) return header.slice(7).trim();
   const cookie = request.headers.get("Cookie") || "";
@@ -276,7 +285,7 @@ export async function sessionUser(env, request, now = Date.now()) {
   if (!token) return null;
   const tokenHash = await sha256(token);
   const row = await env.DB.prepare(
-    "SELECT u.*, s.expires_at AS session_expires, s.last_seen_at FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?",
+    "SELECT u.*, s.expires_at AS session_expires, s.last_seen_at, s.created_at AS session_created FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?",
   ).bind(tokenHash).first();
   if (!row || row.session_expires <= now) return null;
   if (row.status !== "active") return null;

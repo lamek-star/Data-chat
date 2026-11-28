@@ -3,6 +3,8 @@
 // changes. Browsers authenticate with an HttpOnly session cookie; the
 // Android/iOS app keeps a session token and sends it as a Bearer header.
 
+import { derivePasswordKey } from "../lib/passwordKey.js";
+
 const API_BASE = (
   import.meta.env.VITE_API_BASE_URL ??
   // In development the Vite /api proxy serves the API on the same origin.
@@ -122,16 +124,56 @@ export async function requestEmailCode(email) {
 }
 
 /** Checks the code; creates the account on first sign-in from `profile`. */
-export async function verifyEmailCode(email, code, profile) {
+export async function verifyEmailCode(email, code, profile, password) {
+  // A password chosen at sign-up is stretched on this device; only the key is sent.
+  const passwordKey = password ? await derivePasswordKey(email, password) : undefined;
   const result = await api("/api/auth/email/verify", {
     method: "POST",
-    body: { email, code, profile, client: isNative() ? "native" : undefined },
+    body: { email, code, profile, passwordKey, client: isNative() ? "native" : undefined },
   });
+  return signedIn(result);
+}
+
+// The session is saved straight away, but the app is told only when the
+// sign-in screen is done (announceSignIn), so a follow-up step such as
+// "Set a password" isn't skipped by the app opening underneath it.
+function signedIn(result) {
   if (result.token) storage.set(result.token);
   currentUser = result.user;
-  emit("SIGNED_IN");
-  return { user: toAuthUser(result.user) };
+  return { user: toAuthUser(result.user), hasPassword: Boolean(result.user?.hasPassword) };
 }
+
+/** Tells the app the member is signed in (after any follow-up step). */
+export function announceSignIn() {
+  if (currentUser) emit("SIGNED_IN");
+}
+
+/** Email + password sign-in (no code). The password never leaves the device. */
+export async function passwordSignIn(email, password) {
+  const clean = String(email).trim().toLowerCase();
+  const key = await derivePasswordKey(clean, password);
+  return signedIn(await api("/api/auth/password/login", { method: "POST", body: { email: clean, key, client: isNative() ? "native" : undefined } }));
+}
+
+/** Forgot password: the emailed code proves the address, then the new password is saved. */
+export async function resetPasswordWithCode(email, code, password) {
+  const clean = String(email).trim().toLowerCase();
+  const key = await derivePasswordKey(clean, password);
+  return signedIn(await api("/api/auth/password/reset", { method: "POST", body: { email: clean, code, key, client: isNative() ? "native" : undefined } }));
+}
+
+/** Set or change the password while signed in. Other devices are signed out. */
+export async function changePassword(newPassword, currentPassword) {
+  const email = currentUser?.email;
+  if (!email) throw new Error("Sign in again first.");
+  const key = await derivePasswordKey(email, newPassword);
+  const currentKey = currentPassword ? await derivePasswordKey(email, currentPassword) : undefined;
+  await api("/api/auth/password/set", { method: "POST", body: { key, currentKey } });
+  currentUser = { ...currentUser, hasPassword: true };
+  return true;
+}
+
+export const accountHasPassword = () => Boolean(currentUser?.hasPassword);
 
 export async function signOut() {
   try {

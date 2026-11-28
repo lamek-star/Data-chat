@@ -26,6 +26,11 @@ import {
   loadEntitlement,
   getAccessToken,
   submitReport,
+  passwordSignIn,
+  resetPasswordWithCode,
+  changePassword as changeCloudPassword,
+  accountHasPassword,
+  announceSignIn,
   listRateOffers,
   postRateOffer,
   withdrawRateOffer,
@@ -63,6 +68,7 @@ import { lastMessageByContact, messagePreview, totalUnread, unreadByContact } fr
 import { NotificationsPanel } from "./NotificationsPanel";
 import { contactLink, normalizeContactCode, parseContactScan, scanProblem } from "./contactScan";
 import { downscaleImage } from "./lib/images";
+import { passwordProblem } from "./lib/passwordKey";
 import QRCode from "qrcode";
 import { Html5Qrcode } from "html5-qrcode";
 import {
@@ -982,6 +988,7 @@ function Auth({ db, save, login }) {
   const [mode, setMode] = useState("login");
   const [err, setErr] = useState("");
   const [otpStep, setOtpStep] = useState(null);
+  const [pwOffer, setPwOffer] = useState(null); // signed in with a code, no password yet
   const [resendIn, setResendIn] = useState(0);
   const [busy, setBusy] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
@@ -1041,20 +1048,43 @@ function Auth({ db, save, login }) {
     const email = String(otpStep?.email || f.get("email") || "").trim().toLowerCase();
     const password = String(f.get("password") || "");
     if (cloudConfigured) {
+      const finish = async (result) => {
+        announceSignIn();
+        const { cloudDb } = await loadCloudDb(result.user);
+        login(cloudDb.users[0]);
+      };
+      const newPassword = () => {
+        const value = String(f.get("newPassword") ?? f.get("password") ?? "");
+        const confirm = String(f.get("confirmNewPassword") ?? f.get("confirmPassword") ?? "");
+        const problem = passwordProblem(value, email);
+        if (problem) throw new Error(problem);
+        if (value !== confirm) throw new Error("The two passwords don't match.");
+        return value;
+      };
       try {
         setBusy(true);
         setErr("");
-        // Step 2: check the emailed code. New accounts are created here from
-        // the sign-up details; plan, role and status are set by the server.
-        if (otpStep) {
-          const result = await verifyEmailCode(email, f.get("otp"), otpStep.profile);
-          const { cloudDb } = await loadCloudDb(result.user);
-          login(cloudDb.users[0]);
-          return;
+        // Signed in with a code and chose to set a password now.
+        if (pwOffer) {
+          await changeCloudPassword(newPassword());
+          return finish(pwOffer);
         }
-        // Step 1: email a code. Same flow for signing in and signing up.
-        if (mode === "register" && f.get("agreement") !== "on")
-          throw new Error("You must accept the User Access & Privacy Agreement.");
+        // Step 2: the emailed code.
+        if (otpStep) {
+          if (otpStep.mode === "forgot") return finish(await resetPasswordWithCode(email, f.get("otp"), newPassword()));
+          const result = await verifyEmailCode(email, f.get("otp"), otpStep.profile, otpStep.password);
+          // Offer a password once, so next time no code is needed.
+          if (!result.hasPassword) return setPwOffer(result);
+          return finish(result);
+        }
+        // Everyday sign-in: email and password, no code.
+        if (mode === "login") return finish(await passwordSignIn(email, password));
+        // Sign-up, sign-in with a code, and "forgot password" all start with a code.
+        let chosenPassword;
+        if (mode === "register") {
+          if (f.get("agreement") !== "on") throw new Error("You must accept the User Access & Privacy Agreement.");
+          chosenPassword = newPassword();
+        }
         const profile =
           mode === "register"
             ? {
@@ -1064,7 +1094,7 @@ function Auth({ db, save, login }) {
               }
             : undefined;
         await requestEmailCode(email);
-        setOtpStep({ email, mode, profile });
+        setOtpStep({ email, mode, profile, password: chosenPassword });
         setResendIn(60);
         setErr("");
       } catch (error) {
@@ -1169,25 +1199,41 @@ function Auth({ db, save, login }) {
       <section className="welcome-access">
         <form className="auth-card" onSubmit={submit}>
           <p className="eyebrow">
-            {mode === "login"
-              ? "WELCOME BACK"
-              : mode === "recover"
-                ? "ONE-TIME ACCOUNT UPGRADE"
-                : "JOIN DATACHAT"}
+            {pwOffer
+              ? "ONE MORE STEP"
+              : mode === "forgot"
+                ? "ACCOUNT RECOVERY"
+                : mode === "login" || mode === "code"
+                  ? "WELCOME BACK"
+                  : mode === "recover"
+                    ? "ONE-TIME ACCOUNT UPGRADE"
+                    : "JOIN DATACHAT"}
           </p>
           <h2>
-            {mode === "login"
-              ? "Sign in to your workspace"
-              : mode === "recover"
-                ? "Set your username and password"
-                : "Create your private workspace"}
+            {pwOffer
+              ? "Set a password"
+              : mode === "forgot"
+                ? "Reset your password"
+                : mode === "login" || mode === "code"
+                  ? "Sign in to your workspace"
+                  : mode === "recover"
+                    ? "Set your username and password"
+                    : "Create your private workspace"}
           </h2>
           <p>
-            {mode === "login"
-              ? "Continue your conversations and financial records."
-              : mode === "recover"
-                ? "For accounts created with the old OTP-only login. This confirmation is required once."
-                : "New accounts begin with completely separate data and a short guided tour."}
+            {pwOffer
+              ? "Next time, sign in with your email and this password. No code needed."
+              : mode === "forgot"
+                ? otpStep
+                  ? "Enter the code we emailed you and choose a new password. Your other devices will be signed out."
+                  : "We'll email you a code to prove it's you. Then you choose a new password."
+                : mode === "code"
+                  ? "We'll email you an 8-digit code instead of using your password."
+                  : mode === "login"
+                    ? "Continue your conversations and financial records."
+                    : mode === "recover"
+                      ? "For accounts created with the old OTP-only login. This confirmation is required once."
+                      : "Choose a password. We'll email one code to confirm the address is yours."}
           </p>
           {mode === "register" && !otpStep && (
             <>
@@ -1209,7 +1255,7 @@ function Auth({ db, save, login }) {
             Username
             <input name="username" required autoComplete="username" pattern="[A-Za-z0-9._\-]{3,24}" placeholder={mode === "recover" ? "Choose a username" : "Your username"} />
           </label>}
-          {(mode === "register" || (cloudConfigured && mode === "login")) && !otpStep && <label>
+          {(mode === "register" || (cloudConfigured && ["login", "code", "forgot"].includes(mode))) && !otpStep && !pwOffer && <label>
             Email address
             <input name="email" type="email" required autoComplete="email" placeholder="you@example.com" />
           </label>}
@@ -1225,13 +1271,25 @@ function Auth({ db, save, login }) {
               </span>
             </label>
           )}
-          {otpStep ? (
+          {(pwOffer || otpStep?.mode === "forgot") && (
+            <div className="new-password-fields">
+              <label>
+                New password
+                <span className="password-field"><input name="newPassword" type={showPassword ? "text" : "password"} required minLength="8" maxLength="128" autoComplete="new-password" placeholder="At least 8 characters" /><button type="button" aria-label={showPassword ? "Hide password" : "Show password"} onClick={() => setShowPassword((value) => !value)}><Icon name={showPassword ? "EyeOff" : "Eye"} /></button></span>
+              </label>
+              <label>
+                Repeat new password
+                <input name="confirmNewPassword" type={showPassword ? "text" : "password"} required minLength="8" maxLength="128" autoComplete="new-password" placeholder="Type it again" />
+              </label>
+            </div>
+          )}
+          {pwOffer ? null : otpStep ? (
             <div className="otp-field-group"><label>
               Sign-in code
               <input name="otp" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{8}" minLength="8" maxLength="8" required autoFocus placeholder="Enter 8 digits" />
               <small>Enter the eight-digit code sent to {otpStep.email}.</small>
             </label><button type="button" className="secondary resend-otp" disabled={resendIn > 0 || busy} onClick={resendOtp}><Icon name="RefreshCw" />{resendIn > 0 ? `Resend code in ${resendIn}s` : "Resend code"}</button></div>
-          ) : cloudConfigured ? null : (
+          ) : pwOffer || (cloudConfigured && !["login", "register"].includes(mode)) ? null : (
             <>
             <label>
               Password
@@ -1245,23 +1303,55 @@ function Auth({ db, save, login }) {
           )}
           {err && <div className="error">{err}</div>}
           <button className="primary" type="submit" disabled={busy}>
-            {busy ? "Please wait…" : otpStep ? "Confirm and continue" : cloudConfigured ? "Email me a sign-in code" : mode === "login" ? "Sign in" : "Create free account"}
+            {busy
+              ? "Please wait…"
+              : pwOffer
+                ? "Save password"
+                : otpStep
+                  ? otpStep.mode === "forgot"
+                    ? "Reset password and sign in"
+                    : "Confirm and continue"
+                  : mode === "login"
+                    ? "Sign in"
+                    : mode === "forgot"
+                      ? "Email me a reset code"
+                      : mode === "code"
+                        ? "Email me a sign-in code"
+                        : cloudConfigured
+                          ? "Create account"
+                          : "Create free account"}
             <Icon name="ArrowRight" />
           </button>
-          <button
-            type="button"
-            className="link"
-            onClick={() => {
-              setMode(mode === "login" ? "register" : "login");
-              setOtpStep(null);
-              setResendIn(0);
-              setErr("");
-            }}
-          >
-            {mode === "login"
-              ? "First time here? Create an account"
-              : "Already have an account? Sign in"}
-          </button>
+          {pwOffer ? (
+            <button type="button" className="link" disabled={busy} onClick={() => (announceSignIn(), loadCloudDb(pwOffer.user).then(({ cloudDb }) => login(cloudDb.users[0])).catch((e) => setErr(e.message)))}>
+              Skip for now
+            </button>
+          ) : (
+            <div className="auth-links">
+              {cloudConfigured && mode === "login" && !otpStep && (
+                <>
+                  <button type="button" className="link" onClick={() => (setMode("forgot"), setErr(""))}>
+                    Forgot password?
+                  </button>
+                  <button type="button" className="link" onClick={() => (setMode("code"), setErr(""))}>
+                    Sign in with an email code instead
+                  </button>
+                </>
+              )}
+              <button
+                type="button"
+                className="link"
+                onClick={() => {
+                  setMode(mode === "login" ? "register" : "login");
+                  setOtpStep(null);
+                  setResendIn(0);
+                  setErr("");
+                }}
+              >
+                {mode === "login" ? "First time here? Create an account" : "Back to sign in"}
+              </button>
+            </div>
+          )}
           {mode === "register" && db.adminConfig?.paymentUrl && false && (
             <a
               className="payment-link"
@@ -1428,6 +1518,86 @@ const nav = [
 ];
 const ADMIN_DASHBOARD_URL = "https://admin.datachat.harmongt.uk";
 /** Administrators manage DataChat in the separate, locked-down dashboard. */
+/** Settings: set or change the password used to sign in without a code. */
+function PasswordPanel({ user, setToast }) {
+  const [has, setHas] = useState(accountHasPassword);
+  const [open, setOpen] = useState(false);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [show, setShow] = useState(false);
+  const save = async (e) => {
+    e.preventDefault();
+    const f = new FormData(e.currentTarget);
+    const next = String(f.get("newPassword") || "");
+    const problem = passwordProblem(next, user.email);
+    if (problem) return setError(problem);
+    if (next !== String(f.get("confirmNewPassword") || "")) return setError("The two passwords don't match.");
+    setBusy(true);
+    setError("");
+    try {
+      await changeCloudPassword(next, has ? String(f.get("currentPassword") || "") : undefined);
+      setHas(true);
+      setOpen(false);
+      setToast(has ? "Password changed. Your other devices were signed out." : "Password saved. Next time, sign in without a code.");
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section className="panel password-panel">
+      <div className="panel-title">
+        <div>
+          <h3>
+            <Icon name="KeyRound" size={18} /> Password
+          </h3>
+          <p>
+            {has
+              ? "You sign in with your email and password. Forgot it? Use “Forgot password” on the sign-in screen."
+              : "Set a password to sign in without waiting for an email code."}
+          </p>
+        </div>
+      </div>
+      {open ? (
+        <form className="form password-form" onSubmit={save}>
+          {has && (
+            <label>
+              Current password
+              <input name="currentPassword" type={show ? "text" : "password"} required autoComplete="current-password" />
+            </label>
+          )}
+          <label>
+            New password
+            <input name="newPassword" type={show ? "text" : "password"} required minLength="8" maxLength="128" autoComplete="new-password" placeholder="At least 8 characters" />
+          </label>
+          <label>
+            Repeat new password
+            <input name="confirmNewPassword" type={show ? "text" : "password"} required minLength="8" maxLength="128" autoComplete="new-password" />
+          </label>
+          <label className="check-row">
+            <input type="checkbox" checked={show} onChange={(e) => setShow(e.target.checked)} />
+            <span>Show passwords</span>
+          </label>
+          {error && <div className="error" role="alert">{error}</div>}
+          <div className="modal-actions">
+            <button type="button" className="secondary" onClick={() => (setOpen(false), setError(""))}>
+              Cancel
+            </button>
+            <button className="primary" disabled={busy}>
+              {busy ? "Saving…" : "Save password"}
+            </button>
+          </div>
+        </form>
+      ) : (
+        <button className="primary" onClick={() => setOpen(true)}>
+          <Icon name="KeyRound" />
+          {has ? "Change password" : "Set a password"}
+        </button>
+      )}
+    </section>
+  );
+}
 function AdminDashboardCard() {
   return (
     <div className="page">
@@ -5792,6 +5962,7 @@ function Settings({ db, save, user, logout, setToast, onPlanChanged }) {
             <span className="badge completed">Active</span>
           </Setting>
         </section>
+        {cloudConfigured && <PasswordPanel user={user} setToast={setToast} />}
         {cloudConfigured && <PasskeyPanel setToast={setToast} />}
         {cloudConfigured && <AccountPanel user={user} setToast={setToast} />}
         {user.role !== "admin" && (

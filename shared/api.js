@@ -18,10 +18,12 @@ import {
   endSession,
   publicUser,
   sessionCookie,
+  sessionToken,
   sessionUser,
   startEmailLogin,
   verifyEmailLogin,
 } from "./auth.js";
+import { changePassword, passwordLogin, resetPassword, setPassword } from "./password.js";
 import {
   ApiError,
   findProfiles,
@@ -120,10 +122,35 @@ async function authRoutes(request, env, url) {
   }
   if (url.pathname === "/api/auth/email/verify" && request.method === "POST") {
     const body = await readJson(request);
-    const { token, user, expiresAt } = await verifyEmailLogin(env, { email: body.email, code: body.code, profile: body.profile, ip });
+    const { token, user, expiresAt } = await verifyEmailLogin(env, {
+      email: body.email,
+      code: body.code,
+      profile: body.profile,
+      ip,
+      passwordKey: body.passwordKey,
+      setPassword,
+    });
     // Native apps keep the token in secure storage; browsers only get the HttpOnly cookie.
     const payload = body.client === "native" ? { user, token, expiresAt } : { user, expiresAt };
     return json(request, env, payload, 200, { "Set-Cookie": sessionCookie(token) });
+  }
+  // Password sign-in and recovery (shared/password.js).
+  if (url.pathname === "/api/auth/password/login" && request.method === "POST") {
+    const body = await readJson(request);
+    const { token, user, expiresAt } = await passwordLogin(env, { email: body.email, key: body.key, ip });
+    const payload = body.client === "native" ? { user, token, expiresAt } : { user, expiresAt };
+    return json(request, env, payload, 200, { "Set-Cookie": sessionCookie(token) });
+  }
+  if (url.pathname === "/api/auth/password/reset" && request.method === "POST") {
+    const body = await readJson(request);
+    const { token, user, expiresAt } = await resetPassword(env, { email: body.email, code: body.code, key: body.key, ip });
+    const payload = body.client === "native" ? { user, token, expiresAt } : { user, expiresAt };
+    return json(request, env, payload, 200, { "Set-Cookie": sessionCookie(token) });
+  }
+  if (url.pathname === "/api/auth/password/set" && request.method === "POST") {
+    const user = await sessionUser(env, request);
+    if (!user) return json(request, env, { error: "Sign in to continue." }, 401);
+    return json(request, env, await changePassword(env, user, await readJson(request), sessionToken(request)));
   }
   if (url.pathname === "/api/auth/session" && request.method === "GET") {
     const user = await sessionUser(env, request);
