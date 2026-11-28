@@ -26,6 +26,14 @@ import {
   loadEntitlement,
   getAccessToken,
   submitReport,
+  listRateOffers,
+  postRateOffer,
+  withdrawRateOffer,
+  listCommunities,
+  createCommunity,
+  joinCommunity,
+  decideCommunityRequest,
+  leaveCommunity,
 } from "./cloud/cloudClient";
 import { AccountPanel } from "./AccountPanel";
 import * as I from "lucide-react";
@@ -877,6 +885,7 @@ function App() {
           <Home {...props} setPage={setPage} pendingAdd={pendingAdd} clearPendingAdd={clearPendingAdd} />
         )}{" "}
         {page === "portal" && <Portal {...props} setPage={setPage} />}{" "}
+        {page === "admin" && <AdminDashboardCard />}
         {page === "rates" && activeUser.plan === "Pro" && (
           <RatesMarketplace {...props} setPage={setPage} />
         )}{" "}
@@ -1417,6 +1426,32 @@ const nav = [
   ["reports", "ChartNoAxesCombined", "Reports"],
   ["settings", "Settings", "Settings"],
 ];
+const ADMIN_DASHBOARD_URL = "https://admin.datachat.harmongt.uk";
+/** Administrators manage DataChat in the separate, locked-down dashboard. */
+function AdminDashboardCard() {
+  return (
+    <div className="page">
+      <Header title="Administration" sub="Members, Pro codes, rate offers, communities and reports" />
+      <section className="panel admin-dashboard-card">
+        <span className="community-icon">
+          <Icon name="ShieldCheck" />
+        </span>
+        <div>
+          <h2>The admin dashboard has its own secure address</h2>
+          <p>
+            Approve rate offers, create communities, manage members and Pro codes,
+            and review reports at <b>admin.datachat.harmongt.uk</b>. It asks for a
+            Cloudflare sign-in and a separate admin code.
+          </p>
+        </div>
+        <a className="primary" href={ADMIN_DASHBOARD_URL} target="_blank" rel="noopener noreferrer">
+          <Icon name="ExternalLink" />
+          Open admin dashboard
+        </a>
+      </section>
+    </div>
+  );
+}
 function Sidebar({ page, setPage, user, unread = 0 }) {
   const visibleNav =
     user.role === "admin"
@@ -1584,7 +1619,21 @@ const sampleOffers = [
     note: "Rate confirmed again before order acceptance.",
   },
 ];
-function RatesMarketplace({ db, save, user, setToast, setPage }) {
+function RatesMarketplace({ db, save, user, setToast, setPage, messaging }) {
+  // Signed-in members see offers shared through the server (approved by an
+  // administrator, plus their own); demo mode keeps the built-in samples.
+  const [remoteOffers, setRemoteOffers] = useState(null);
+  const [offersError, setOffersError] = useState("");
+  const loadOffers = () => {
+    if (!cloudConfigured) return;
+    listRateOffers()
+      .then((list) => {
+        setRemoteOffers(list);
+        setOffersError("");
+      })
+      .catch((e) => setOffersError(e.message));
+  };
+  useEffect(loadOffers, []);
   const [base, setBase] = useState("USD");
   const [market, setMarket] = useState("UAE");
   const [assets, setAssets] = useState({
@@ -1702,13 +1751,61 @@ function RatesMarketplace({ db, save, user, setToast, setPage }) {
       });
     return () => controller.abort();
   }, [base, refresh]);
-  const offers = [...sampleOffers, ...(db.rateOffers || [])];
+  const offers = cloudConfigured ? remoteOffers || [] : [...sampleOffers, ...(db.rateOffers || [])];
   const visible = offers.filter((x) =>
     (x.provider + x.fromCurrency + x.toCurrency + x.instrument + x.location)
       .toLowerCase()
       .includes(search.toLowerCase()),
   );
+  const withdraw = async (offer) => {
+    try {
+      await withdrawRateOffer(offer.id);
+      setToast("Offer withdrawn");
+    } catch (e) {
+      setToast(e.message);
+    }
+    loadOffers();
+  };
   const messageProvider = (offer) => {
+    if (offer.ownerId) {
+      // A member's offer: message their real DataChat account.
+      if (offer.ownerId === user.id) return setToast("This is your own offer");
+      const contactId = `cloud-${offer.ownerId}`;
+      const existing = db.contacts.find((x) => x.owner === user.id && x.remoteUserId === offer.ownerId);
+      const message = {
+        id: crypto.randomUUID(),
+        owner: user.id,
+        contact: existing?.id || contactId,
+        sender: "me",
+        content: `Rate order inquiry: ${offer.side} ${offer.fromCurrency}/${offer.toCurrency} at ${offer.rate}. Instrument: ${offer.instrument}. Please confirm availability, fees, and final amount.`,
+        cloudMessage: true,
+        deliveryStatus: "sending",
+        time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      };
+      save((d) => ({
+        ...d,
+        contacts: existing
+          ? d.contacts
+          : [
+              ...d.contacts,
+              {
+                id: contactId,
+                owner: user.id,
+                remoteUserId: offer.ownerId,
+                name: offer.provider,
+                phone: offer.contact,
+                country: offer.location || "Marketplace",
+                color: "#35a57a",
+                rateProvider: offer.provider,
+              },
+            ],
+        messages: [...d.messages, message],
+      }));
+      messaging?.queueMessage(offer.ownerId, message);
+      setToast(`Order inquiry sent to ${offer.provider}`);
+      setPage("home");
+      return;
+    }
     let contact = db.contacts.find(
       (x) =>
         x.owner === user.id &&
@@ -1944,6 +2041,14 @@ function RatesMarketplace({ db, save, user, setToast, setPage }) {
           />
         </div>
       </div>
+      {cloudConfigured && offersError && <div className="error">{offersError}</div>}
+      {cloudConfigured && remoteOffers && !visible.length && (
+        <div className="empty-offers">
+          <Icon name="Store" />
+          <b>No approved offers yet</b>
+          <small>Post your rate. It appears for everyone once an administrator approves it.</small>
+        </div>
+      )}
       <div className="offer-list">
         {visible.map((offer) => (
           <article className="offer-card" key={offer.id}>
@@ -1966,7 +2071,13 @@ function RatesMarketplace({ db, save, user, setToast, setPage }) {
                   {offer.location} · {offer.contact}
                 </span>
               </div>
-              <small className="user-posted">User posted</small>
+              {offer.mine ? (
+                <small className={`user-posted offer-status ${offer.status}`}>
+                  {offer.status === "pending" ? "Waiting for approval" : offer.status === "rejected" ? "Not approved" : "Your offer · live"}
+                </small>
+              ) : (
+                <small className="user-posted">{offer.verified ? "Approved provider" : "User posted"}</small>
+              )}
             </div>
             <div className="offer-pair">
               <span>{offer.side}</span>
@@ -1986,11 +2097,19 @@ function RatesMarketplace({ db, save, user, setToast, setPage }) {
                 {offer.min}–{offer.max} {offer.fromCurrency}
               </span>
               <p>{offer.note}</p>
+              {offer.mine && offer.status === "rejected" && offer.adminNote && <p className="offer-admin-note">Reason: {offer.adminNote}</p>}
             </div>
-            <button className="primary" onClick={() => messageProvider(offer)}>
-              <Icon name="MessageCircle" />
-              Message & place order
-            </button>
+            {offer.mine ? (
+              <button className="secondary" onClick={() => withdraw(offer)}>
+                <Icon name="Undo2" />
+                Withdraw offer
+              </button>
+            ) : (
+              <button className="primary" onClick={() => messageProvider(offer)}>
+                <Icon name="MessageCircle" />
+                Message & place order
+              </button>
+            )}
           </article>
         ))}
       </div>
@@ -2012,15 +2131,33 @@ function RatesMarketplace({ db, save, user, setToast, setPage }) {
           save={save}
           close={() => setAdd(false)}
           setToast={setToast}
+          onPosted={loadOffers}
         />
       )}
     </div>
   );
 }
-function RateOfferModal({ user, save, close, setToast }) {
-  const submit = (e) => {
+function RateOfferModal({ user, save, close, setToast, onPosted }) {
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState("");
+  const submit = async (e) => {
     e.preventDefault();
     const f = Object.fromEntries(new FormData(e.currentTarget));
+    if (cloudConfigured) {
+      setSending(true);
+      setError("");
+      try {
+        await postRateOffer({ ...f, rate: +f.rate, min: +f.min, max: +f.max });
+        setToast("Sent for approval. Everyone sees it once an administrator approves it.");
+        onPosted?.();
+        close();
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setSending(false);
+      }
+      return;
+    }
     const offer = {
       ...f,
       id: uid("offer"),
@@ -2044,8 +2181,9 @@ function RateOfferModal({ user, save, close, setToast }) {
           <div>
             <b>Pro marketplace listing</b>
             <small>
-              Your contact information and terms will be visible to signed-in
-              members.
+              {cloudConfigured
+                ? "An administrator reviews your offer first. Once approved, signed-in members see your contact details and terms for 30 days."
+                : "Your contact information and terms will be visible to signed-in members."}
             </small>
           </div>
         </div>
@@ -2139,9 +2277,10 @@ function RateOfferModal({ user, save, close, setToast }) {
           <button type="button" className="secondary" onClick={close}>
             Cancel
           </button>
-          <button className="primary">
+          {error && <div className="error full" role="alert">{error}</div>}
+          <button className="primary" disabled={sending}>
             <Icon name="Send" />
-            Publish rate
+            {cloudConfigured ? (sending ? "Sending…" : "Send for approval") : "Publish rate"}
           </button>
         </div>
       </form>
@@ -2283,10 +2422,235 @@ function Portal({ db, save, user, setToast, setPage }) {
           </p>
         </div>
       </div>
-      <CommunityManager db={db} save={save} user={user} setToast={setToast} />
+      {cloudConfigured ? (
+        <CloudCommunityManager user={user} setToast={setToast} />
+      ) : (
+        <CommunityManager db={db} save={save} user={user} setToast={setToast} />
+      )}
     </div>
   );
 }
+/**
+ * Communities shared through the server (signed-in members). Administrators
+ * create the top-level communities (open to join); members create groups
+ * beneath them, and the group's owner approves who joins.
+ */
+function CloudCommunityManager({ user, setToast }) {
+  const [groups, setGroups] = useState(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState("");
+  const [createOpen, setCreateOpen] = useState(false);
+  const load = () =>
+    listCommunities()
+      .then((list) => {
+        setGroups(list);
+        setError("");
+      })
+      .catch((e) => setError(e.message));
+  useEffect(() => {
+    load();
+  }, []);
+  const act = async (key, fn, done) => {
+    setBusy(key);
+    try {
+      const result = await fn();
+      if (done) setToast(typeof done === "function" ? done(result) : done);
+      return true;
+    } catch (e) {
+      setToast(e.message);
+      return false;
+    } finally {
+      setBusy("");
+      load();
+    }
+  };
+  // Parents first, each followed by its own groups.
+  const list = (() => {
+    const all = groups || [];
+    const kids = new Map();
+    for (const c of all) {
+      const key = all.some((p) => p.id === c.parentId) ? c.parentId : null;
+      if (!kids.has(key)) kids.set(key, []);
+      kids.get(key).push(c);
+    }
+    const out = [];
+    const walk = (key) => (kids.get(key) || []).forEach((c) => (out.push(c), walk(c.id)));
+    walk(null);
+    return out;
+  })();
+  const eligibleParents = list.filter((g) => g.allowSubgroups && g.level < 4);
+  const createGroup = (e) => {
+    e.preventDefault();
+    const f = Object.fromEntries(new FormData(e.currentTarget));
+    act(
+      "create",
+      () => createCommunity({ ...f, allowSubgroups: f.allowSubgroups === "on" }),
+      `${f.name} created. Share its name so people can ask to join.`,
+    ).then((ok) => ok && setCreateOpen(false));
+  };
+  const waiting = list.reduce((n, g) => n + (g.pendingRequests?.length || 0), 0);
+  return (
+    <section className="community-hub">
+      <div className="community-title">
+        <div>
+          <span className="eyebrow">COMMUNITIES</span>
+          <h2>Communities{waiting > 0 ? ` · ${waiting} waiting for you` : ""}</h2>
+          <p>
+            Join a community, or start a local group beneath one. You approve who
+            joins the groups you start.
+          </p>
+        </div>
+        <button className="primary" onClick={() => setCreateOpen(true)} disabled={!eligibleParents.length}>
+          <Icon name="UsersRound" />
+          Start a group
+        </button>
+      </div>
+      {error && <div className="error">{error}</div>}
+      {!groups && !error && <p className="muted">Loading communities…</p>}
+      <div className="community-tree">
+        {list.map((group) => {
+          const parent = list.find((x) => x.id === group.parentId);
+          const member = Boolean(group.myRole);
+          return (
+            <article key={group.id} style={{ "--depth": Math.min(group.level || 0, 3) }}>
+              <div className="community-path">
+                {parent ? (
+                  <>
+                    <Icon name="CornerDownRight" />
+                    Under {parent.name}
+                  </>
+                ) : (
+                  <>
+                    <Icon name="Network" />
+                    Run by DataChat
+                  </>
+                )}
+              </div>
+              <div className="community-main">
+                <span className="community-icon">
+                  <Icon name="MapPinned" />
+                </span>
+                <div>
+                  <h3>{group.name}</h3>
+                  <p>{group.purpose}</p>
+                  <div className="community-meta">
+                    <span>
+                      <Icon name="MapPin" />
+                      {group.location}
+                    </span>
+                    <span>
+                      <Icon name="Users" />
+                      {group.memberCount} member{group.memberCount === 1 ? "" : "s"}
+                    </span>
+                    <span>
+                      <Icon name={group.adminRun ? "ShieldCheck" : "UserRound"} />
+                      {group.adminRun ? "Open to everyone" : `Started by ${group.ownerName || "a member"}`}
+                    </span>
+                  </div>
+                </div>
+              </div>
+              <div className="community-actions">
+                {group.myRole === "owner" && <span className="badge completed" style={{ textTransform: "none" }}>You run this group</span>}
+                {group.myRole === "member" && (
+                  <button className="secondary" disabled={busy === group.id} onClick={() => act(group.id, () => leaveCommunity(group.id), `You left ${group.name}`)}>
+                    Leave
+                  </button>
+                )}
+                {!member && group.myRequest === "pending" && (
+                  <button className="secondary" disabled>
+                    Waiting for approval
+                  </button>
+                )}
+                {!member && group.myRequest !== "pending" && (
+                  <button
+                    className="secondary"
+                    disabled={busy === group.id}
+                    onClick={() =>
+                      act(group.id, () => joinCommunity(group.id), (r) => (r.status === "member" ? `You joined ${group.name}` : `Request sent to the owner of ${group.name}`))
+                    }
+                  >
+                    {group.adminRun ? "Join" : group.myRequest === "declined" ? "Ask again" : "Request to join"}
+                  </button>
+                )}
+              </div>
+              {group.canManage && group.pendingRequests?.length > 0 && (
+                <div className="join-request-list">
+                  <b>Join requests</b>
+                  {group.pendingRequests.map((request) => (
+                    <div key={request.userId}>
+                      <span>
+                        {request.name}
+                        <small>{request.username ? `@${request.username}` : ""}</small>
+                      </span>
+                      <button
+                        className="secondary"
+                        disabled={busy === request.userId}
+                        onClick={() => act(request.userId, () => decideCommunityRequest(group.id, request.userId, true), `${request.name} joined ${group.name}`)}
+                      >
+                        Approve
+                      </button>
+                      <button
+                        className="icon-btn danger"
+                        aria-label={`Decline ${request.name}`}
+                        disabled={busy === request.userId}
+                        onClick={() => act(request.userId, () => decideCommunityRequest(group.id, request.userId, false), "Request declined")}
+                      >
+                        <Icon name="X" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </article>
+          );
+        })}
+      </div>
+      {createOpen && (
+        <Modal title="Start a group" close={() => setCreateOpen(false)}>
+          <form className="form" onSubmit={createGroup}>
+            <label>
+              Inside which community?
+              <select name="parentId" required defaultValue="">
+                <option value="" disabled>
+                  Choose a community…
+                </option>
+                {eligibleParents.map((x) => (
+                  <option key={x.id} value={x.id}>
+                    {"—".repeat(x.level || 0)} {x.name} · {x.location}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Group name
+              <input name="name" required minLength="3" maxLength="60" />
+            </label>
+            <label>
+              Location
+              <input name="location" required placeholder="City, area or country" maxLength="80" />
+            </label>
+            <label>
+              Purpose
+              <textarea name="purpose" required minLength="12" maxLength="400" placeholder="What this group is for" />
+            </label>
+            <label className="check-row">
+              <input type="checkbox" name="allowSubgroups" />
+              <span>
+                <b>Allow groups inside this one</b>
+                <small>Members can start smaller groups beneath yours.</small>
+              </span>
+            </label>
+            <button className="primary" disabled={busy === "create"}>
+              <Icon name="Plus" />
+              {busy === "create" ? "Creating…" : "Create group"}
+            </button>
+          </form>
+        </Modal>
+      )}
+    </section>
+  );
+}
+
 function CommunityManager({ db, save, user, setToast }) {
   const [createOpen, setCreateOpen] = useState(false);
   const [manage, setManage] = useState(null);

@@ -1,16 +1,20 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Activity, Flag, LayoutDashboard, LockKeyhole, LogOut, ShieldCheck, TicketCheck, Timer, Users } from "lucide-react";
+import { Activity, Flag, LayoutDashboard, LockKeyhole, LogOut, Network, ShieldCheck, Store, TicketCheck, Timer, Users } from "lucide-react";
 import { adminApi } from "./adminApi.js";
 import { Overview } from "./Overview.jsx";
 import { Members } from "./Members.jsx";
 import { Codes } from "./Codes.jsx";
 import { Reports } from "./Reports.jsx";
 import { ActivityLog } from "./ActivityLog.jsx";
+import { Offers } from "./Offers.jsx";
+import { Communities } from "./Communities.jsx";
 
 const TABS = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
   { id: "members", label: "Members", icon: Users },
   { id: "codes", label: "Pro codes", icon: TicketCheck },
+  { id: "offers", label: "Offers", icon: Store },
+  { id: "communities", label: "Communities", icon: Network },
   { id: "reports", label: "Reports", icon: Flag },
   { id: "activity", label: "Activity", icon: Activity },
 ];
@@ -229,6 +233,8 @@ export function AdminApp() {
         {tab === "codes" && <Codes {...props} />}
         {tab === "reports" && <Reports {...props} />}
         {tab === "activity" && <ActivityLog {...props} />}
+        {tab === "offers" && <Offers {...props} />}
+        {tab === "communities" && <Communities {...props} />}
       </main>
       {toast && (
         <div className="ad-toast" role="status">

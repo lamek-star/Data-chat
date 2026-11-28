@@ -23,6 +23,7 @@ import { ApiError, adminCreateCode, adminListCodes, adminListMembers, adminSetMe
 import { adminListReports, adminReviewReport } from "./safety.js";
 import { listAudit, recordAudit } from "./audit.js";
 import { adminStats } from "./adminStats.js";
+import { adminCreateCommunity, adminListCommunities, adminListOffers, adminReviewOffer, adminSetCommunity } from "./community.js";
 import { requestLocation } from "./email.js";
 import { accessConfigured, verifyAccess } from "./access.js";
 
@@ -155,7 +156,7 @@ async function adminApi(request, env, url, now) {
     return json({ signedOut: true }, 200, { "Set-Cookie": clearAdminCookie() });
   }
 
-  if (!/^\/api\/admin\/(stats|members|codes|reports|audit)$/.test(pathname)) return json({ error: "Not found." }, 404);
+  if (!/^\/api\/admin\/(stats|members|codes|reports|audit|offers|communities)$/.test(pathname)) return json({ error: "Not found." }, 404);
   if (!user) return json({ error: "Your admin session has ended. Sign in again." }, 401);
 
   if (pathname === "/api/admin/stats" && m === "GET") return json({ stats: await adminStats(env, user, now) });
@@ -166,6 +167,11 @@ async function adminApi(request, env, url, now) {
   if (pathname === "/api/admin/reports" && m === "GET") return json({ reports: await adminListReports(env, user, url.searchParams.get("status")) });
   if (pathname === "/api/admin/reports" && m === "PATCH") return json(await adminReviewReport(env, user, await readJson(request)));
   if (pathname === "/api/admin/audit" && m === "GET") return json({ events: await listAudit(env, url.searchParams.get("limit")) });
+  if (pathname === "/api/admin/offers" && m === "GET") return json({ offers: await adminListOffers(env, user, url.searchParams.get("status"), now) });
+  if (pathname === "/api/admin/offers" && m === "PATCH") return json(await adminReviewOffer(env, user, await readJson(request), now));
+  if (pathname === "/api/admin/communities" && m === "GET") return json({ communities: await adminListCommunities(env, user) });
+  if (pathname === "/api/admin/communities" && m === "POST") return json(await adminCreateCommunity(env, user, await readJson(request), now));
+  if (pathname === "/api/admin/communities" && m === "PATCH") return json(await adminSetCommunity(env, user, await readJson(request)));
   return json({ error: "Method not allowed." }, 405);
 }
 

@@ -7,6 +7,9 @@ const KINDS = {
   "member.update": { label: "Changed a member", icon: UserCog },
   "code.create": { label: "Created a Pro code", icon: KeyRound },
   "report.review": { label: "Reviewed a report", icon: Flag },
+  "offer.review": { label: "Reviewed a rate offer", icon: Flag },
+  "community.create": { label: "Created a community", icon: UserCog },
+  "community.status": { label: "Archived or restored a community", icon: UserCog },
 };
 
 const describe = (event, members) => {
@@ -14,6 +17,7 @@ const describe = (event, members) => {
   const target = members.find((m) => m.id === event.targetId);
   return [
     event.action !== "admin.signin" && target ? target.name || target.email : "",
+    d.name && d.name,
     d.plan && `plan: ${d.plan}`,
     d.status && `status: ${d.status}`,
     d.codeEnding && `code ending ${d.codeEnding}`,

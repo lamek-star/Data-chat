@@ -3905,3 +3905,42 @@ aside nav button:hover:not(.active) {
     -webkit-backdrop-filter: none;
   }
 }
+
+/* ---- Shared offers & communities ---- */
+.offer-status.pending { color: #e8c37a; }
+.offer-status.rejected { color: #f08c7a; }
+.offer-status.approved { color: var(--green); }
+.offer-admin-note {
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-left: 2px solid #f08c7a;
+  border-radius: 0 8px 8px 0;
+  background: rgba(240, 140, 122, 0.08);
+  color: #ffc2b7;
+}
+.empty-offers {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  padding: 26px 16px;
+  margin-bottom: 16px;
+  border: 1px dashed var(--glass-line-2, #34435c);
+  border-radius: 16px;
+  color: var(--muted);
+  text-align: center;
+}
+.empty-offers svg { color: var(--gold2); }
+.empty-offers b { color: #e6edf6; }
+.admin-dashboard-card {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 18px;
+  text-transform: none;
+}
+.admin-dashboard-card h2 { margin: 0 0 6px; font-size: 20px; }
+.admin-dashboard-card p { margin: 0; color: var(--muted); max-width: 62ch; }
+.admin-dashboard-card a.primary { text-decoration: none; display: inline-flex; align-items: center; gap: 8px; }
+@media (max-width: 720px) {
+  .admin-dashboard-card { grid-template-columns: 1fr; }
+}

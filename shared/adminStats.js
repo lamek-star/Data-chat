@@ -26,7 +26,7 @@ export async function adminStats(env, user, now = Date.now()) {
   requireAdmin(user);
   const db = env.DB;
   const sinceWeeks = new Date(startOfDay(now) + DAY - 12 * WEEK).toISOString();
-  const [members, signups, messages, active, trialsEnding, sealed, reports, codes, countries] = await Promise.all([
+  const [members, signups, messages, active, trialsEnding, sealed, reports, codes, countries, offers, groups] = await Promise.all([
     db.prepare(
       `SELECT COUNT(*) AS total,
               SUM(status = 'active') AS active,
@@ -48,6 +48,8 @@ export async function adminStats(env, user, now = Date.now()) {
     db.prepare("SELECT COUNT(*) AS total, SUM(status = 'open') AS open FROM member_reports").first(),
     db.prepare("SELECT SUM(status = 'available') AS available, SUM(status = 'used') AS used FROM pro_access_codes").first(),
     db.prepare("SELECT country, COUNT(*) AS n FROM users WHERE role <> 'admin' GROUP BY country ORDER BY n DESC LIMIT 6").all(),
+    db.prepare("SELECT SUM(status = 'pending') AS pending, SUM(status = 'approved' AND expires_at > ?) AS live FROM rate_offers").bind(now).first(),
+    db.prepare("SELECT COUNT(*) AS n FROM communities WHERE status = 'active'").first(),
   ]);
   const num = (value) => Number(value) || 0;
   const total = num(members?.total);
@@ -82,6 +84,8 @@ export async function adminStats(env, user, now = Date.now()) {
     sealed: { total: num(sealed?.total), opened: num(sealed?.opened), last30Days: num(sealed?.recent) },
     reports: { total: num(reports?.total), open: num(reports?.open) },
     codes: { available: num(codes?.available), used: num(codes?.used) },
+    offers: { pending: num(offers?.pending), live: num(offers?.live) },
+    communities: { active: num(groups?.n) },
     countries: (countries.results || []).map((r) => ({ country: r.country || "Global", members: num(r.n) })),
   };
 }

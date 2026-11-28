@@ -38,4 +38,9 @@ export const adminApi = {
   reports: async (status) => (await api(`/api/admin/reports${status ? `?status=${encodeURIComponent(status)}` : ""}`)).reports,
   reviewReport: (id, status, note = "") => api("/api/admin/reports", { method: "PATCH", body: { id, status, note } }),
   audit: async () => (await api("/api/admin/audit?limit=200")).events,
+  offers: async (status) => (await api(`/api/admin/offers${status ? `?status=${encodeURIComponent(status)}` : ""}`)).offers,
+  reviewOffer: (id, status, note = "") => api("/api/admin/offers", { method: "PATCH", body: { id, status, note } }),
+  communities: async () => (await api("/api/admin/communities")).communities,
+  createCommunity: (body) => api("/api/admin/communities", { method: "POST", body }),
+  setCommunity: (id, status) => api("/api/admin/communities", { method: "PATCH", body: { id, status } }),
 };

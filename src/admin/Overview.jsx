@@ -42,7 +42,7 @@ export function Overview({ run, setToast, setBadges, user, goTo }) {
     try {
       const next = await run(adminApi.stats);
       setStats(next);
-      setBadges((b) => ({ ...b, reports: next.reports.open }));
+      setBadges((b) => ({ ...b, reports: next.reports.open, offers: next.offers?.pending || 0 }));
     } catch (e) {
       setError(e.message);
     } finally {

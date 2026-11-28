@@ -422,3 +422,32 @@ export async function deleteMyAccount(confirmEmail) {
   emit("SIGNED_OUT");
   return result;
 }
+
+// ------------------------------------------------- offers & communities --
+
+/** Approved offers from everyone, plus your own (any status). */
+export async function listRateOffers() {
+  return (await api("/api/rates/offers")).offers;
+}
+/** Posts an offer; it waits for an administrator before others see it. */
+export async function postRateOffer(offer) {
+  return (await api("/api/rates/offers", { method: "POST", body: offer })).offer;
+}
+export async function withdrawRateOffer(id) {
+  return api("/api/rates/offers/withdraw", { method: "POST", body: { id } });
+}
+export async function listCommunities() {
+  return (await api("/api/communities")).communities;
+}
+export async function createCommunity(group) {
+  return api("/api/communities", { method: "POST", body: group });
+}
+export async function joinCommunity(id) {
+  return api("/api/communities/join", { method: "POST", body: { id } });
+}
+export async function decideCommunityRequest(id, userId, approve) {
+  return api("/api/communities/decide", { method: "POST", body: { id, userId, approve } });
+}
+export async function leaveCommunity(id) {
+  return api("/api/communities/leave", { method: "POST", body: { id } });
+}

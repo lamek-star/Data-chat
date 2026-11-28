@@ -38,6 +38,16 @@ import {
 } from "./data.js";
 import { requestLocation } from "./email.js";
 import { deleteAccount, exportAccount } from "./account.js";
+import {
+  createCommunity,
+  createOffer,
+  decideJoinRequest,
+  joinCommunity,
+  leaveCommunity,
+  listCommunities,
+  listOffers,
+  withdrawOffer,
+} from "./community.js";
 import { createReport, listMyReports } from "./safety.js";
 import {
   createSeal,
@@ -151,6 +161,15 @@ async function memberRoutes(request, env, url, user) {
     const result = await deleteAccount(env, user, await readJson(request));
     return json(request, env, result, 200, { "Set-Cookie": clearSessionCookie() });
   }
+  // Shared rate offers and communities (shared/community.js).
+  if (pathname === "/api/rates/offers" && m === "GET") return json(request, env, { offers: await listOffers(env, user) });
+  if (pathname === "/api/rates/offers" && m === "POST") return json(request, env, { offer: await createOffer(env, user, await readJson(request)) });
+  if (pathname === "/api/rates/offers/withdraw" && m === "POST") return json(request, env, await withdrawOffer(env, user, await readJson(request)));
+  if (pathname === "/api/communities" && m === "GET") return json(request, env, { communities: await listCommunities(env, user) });
+  if (pathname === "/api/communities" && m === "POST") return json(request, env, await createCommunity(env, user, await readJson(request)));
+  if (pathname === "/api/communities/join" && m === "POST") return json(request, env, await joinCommunity(env, user, await readJson(request)));
+  if (pathname === "/api/communities/decide" && m === "POST") return json(request, env, await decideJoinRequest(env, user, await readJson(request)));
+  if (pathname === "/api/communities/leave" && m === "POST") return json(request, env, await leaveCommunity(env, user, await readJson(request)));
   // Passkeys (fingerprint / face unlock) and sealed transfers.
   if (pathname === "/api/passkeys" && m === "GET") return json(request, env, { passkeys: await listPasskeys(env, user) });
   if (pathname === "/api/passkeys/register/options" && m === "POST") return json(request, env, await passkeyRegistrationOptions(env, user));
@@ -263,7 +282,7 @@ export async function handleApi(request, env, deps = {}) {
       return json(request, env, { url: session.url });
     }
 
-    const known = /^\/api\/(data|profiles?|profile\/photo|messages(\/read)?|pro\/redeem|reports|account\/(export|delete)|passkeys(\/register\/(options|verify)|\/remove)?|sealed(\/open(\/options)?)?)$/.test(url.pathname);
+    const known = /^\/api\/(data|profiles?|profile\/photo|messages(\/read)?|pro\/redeem|reports|rates\/offers(\/withdraw)?|communities(\/(join|decide|leave))?|account\/(export|delete)|passkeys(\/register\/(options|verify)|\/remove)?|sealed(\/open(\/options)?)?)$/.test(url.pathname);
     if (known) {
       if (!user) return json(request, env, { error: "Sign in to continue." }, 401);
       const response = await memberRoutes(request, env, url, user);
